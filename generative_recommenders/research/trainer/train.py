@@ -74,8 +74,26 @@ def setup(rank: int, world_size: int, master_port: int) -> None:
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(master_port)
 
+    # Choose backend based on CUDA availability or environment variable
+    backend = os.environ.get("TORCH_DISTRIBUTED_BACKEND", None)
+    if backend is None:
+        if torch.cuda.is_available():
+            backend = "nccl"
+        else:
+            backend = "gloo"
+            logging.warning("CUDA not available, falling back to gloo backend for CPU training")
+    
+    logging.info(f"Initializing process group with backend: {backend}")
+    
     # initialize the process group
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    try:
+        dist.init_process_group(backend, rank=rank, world_size=world_size)
+    except Exception as e:
+        if backend == "nccl":
+            logging.warning(f"NCCL initialization failed: {e}. Trying gloo backend...")
+            dist.init_process_group("gloo", rank=rank, world_size=world_size)
+        else:
+            raise e
 
 
 def cleanup() -> None:
@@ -129,7 +147,7 @@ def train_fn(
     embedding_module_type: str = "local",
     item_embedding_dim: int = 240,
     interaction_module_type: str = "",
-    gr_output_length: int = 10,
+    gr_output_length: int = 10, # 生成输出长度
     l2_norm_eps: float = 1e-6,
     enable_tf32: bool = False,
     random_seed: int = 42,
@@ -166,10 +184,10 @@ def train_fn(
         shuffle=True,  # needed for partial eval
         drop_last=world_size > 1,
     )
-
+    # embedding
     model_debug_str = main_module
     if embedding_module_type == "local":
-        embedding_module: EmbeddingModule = LocalEmbeddingModule(
+        embedding_module: EmbeddingModule = LocalEmbeddingModule( # 每个物品学习唯一的向量表示
             num_items=dataset.max_item_id,
             item_embedding_dim=item_embedding_dim,
         )
@@ -187,17 +205,17 @@ def train_fn(
         user_embedding_norm == "l2_norm" or user_embedding_norm == "layer_norm"
     ), f"Not implemented for {user_embedding_norm}"
     output_postproc_module = (
-        L2NormEmbeddingPostprocessor(
+        L2NormEmbeddingPostprocessor( # L2范数标准化
             embedding_dim=item_embedding_dim,
             eps=1e-6,
         )
         if user_embedding_norm == "l2_norm"
-        else LayerNormEmbeddingPostprocessor(
+        else LayerNormEmbeddingPostprocessor( # 层标准化
             embedding_dim=item_embedding_dim,
             eps=1e-6,
         )
     )
-    input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
+    input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor( # 为序列中的每个位置学习特定的嵌入表示
         max_sequence_len=dataset.max_sequence_length + gr_output_length + 1,
         embedding_dim=item_embedding_dim,
         dropout_rate=dropout_rate,
@@ -259,14 +277,26 @@ def train_fn(
         raise ValueError(f"Unrecognized sampling strategy {sampling_strategy}.")
     sampling_debug_str = negatives_sampler.debug_str()
 
-    # Creates model and moves it to GPU with id rank
-    device = rank
+    # Creates model and moves it to appropriate device
+    if torch.cuda.is_available():
+        device = rank
+        device_ids = [rank]
+        logging.info(f"Using CUDA device {device}")
+    else:
+        device = torch.device('cpu')
+        device_ids = None
+        logging.info("Using CPU device")
+        
     if main_module_bf16:
         model = model.to(torch.bfloat16)
     model = model.to(device)
     ar_loss = ar_loss.to(device)
     negatives_sampler = negatives_sampler.to(device)
-    model = DDP(model, device_ids=[rank], broadcast_buffers=False)
+    
+    if device_ids is not None:
+        model = DDP(model, device_ids=device_ids, broadcast_buffers=False)
+    else:
+        model = DDP(model, broadcast_buffers=False)
 
     # TODO: wrap in create_optimizer.
     opt = torch.optim.AdamW(

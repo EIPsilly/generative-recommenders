@@ -15,6 +15,7 @@
 # pyre-unsafe
 
 import torch
+from typing import List, Tuple
 
 
 def batch_gather_embeddings(
@@ -127,3 +128,90 @@ def jagged_or_dense_index_select_dim0(
             padded_x[indices, :],
             [torch.ops.fbgemm.asynchronous_complete_cumsum(lengths[indices])],
         )[0]
+
+# 用于将序列长度转换为偏移量，返回每个序列起始位置的索引（offsets），
+def _asynchronous_complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
+    """
+    CPU-compatible replacement for torch.ops.fbgemm.asynchronous_complete_cumsum.
+    Computes cumulative sum of lengths and prepends 0.
+    
+    Args:
+        lengths: Tensor of shape [B] containing sequence lengths
+        
+    Returns:
+        Tensor of shape [B+1] containing cumulative offsets
+    """
+    return torch.cat([torch.zeros(1, device=lengths.device, dtype=lengths.dtype), 
+                     torch.cumsum(lengths, dim=0)])
+
+
+def _jagged_to_padded_dense(values: torch.Tensor, offsets: List[torch.Tensor], 
+                           max_lengths: List[int], padding_value: float = 0.0) -> torch.Tensor:
+    """
+    CPU-compatible replacement for torch.ops.fbgemm.jagged_to_padded_dense.
+    Converts jagged tensor to padded dense tensor.
+    
+    Args:
+        values: Tensor of shape [total_elements, feature_dim]
+        offsets: List containing one tensor of shape [batch_size + 1]
+        max_lengths: List containing maximum sequence length
+        padding_value: Value to use for padding
+        
+    Returns:
+        Padded dense tensor of shape [batch_size, max_length, feature_dim]
+    """
+    x_offsets = offsets[0]
+    max_length = max_lengths[0]
+    batch_size = x_offsets.size(0) - 1
+    feature_dim = values.size(1)
+    
+    # Create padded tensor
+    padded = torch.full((batch_size, max_length, feature_dim), 
+                       padding_value, 
+                       device=values.device, 
+                       dtype=values.dtype)
+    
+    # Fill in the actual values
+    for i in range(batch_size):
+        start_idx = x_offsets[i]
+        end_idx = x_offsets[i + 1]
+        seq_length = end_idx - start_idx
+        if seq_length > 0:
+            padded[i, :seq_length] = values[start_idx:end_idx]
+    
+    return padded
+
+
+def _dense_to_jagged(dense_tensor: torch.Tensor, offsets: List[torch.Tensor]) -> Tuple[torch.Tensor, ...]:
+    """
+    CPU-compatible replacement for torch.ops.fbgemm.dense_to_jagged.
+    Converts padded dense tensor to jagged tensor.
+    
+    Args:
+        dense_tensor: Tensor of shape [batch_size, max_length, feature_dim]
+        offsets: List containing one tensor of shape [batch_size + 1]
+        
+    Returns:
+        Tuple containing jagged tensor of shape [total_elements, feature_dim]
+    """
+    x_offsets = offsets[0]
+    batch_size = x_offsets.size(0) - 1
+    feature_dim = dense_tensor.size(-1)
+    
+    # Calculate total elements
+    total_elements = int(x_offsets[-1].item())
+    
+    # Create jagged tensor
+    jagged = torch.zeros(total_elements, feature_dim, 
+                        device=dense_tensor.device, 
+                        dtype=dense_tensor.dtype)
+    
+    # Fill in the actual values
+    for i in range(batch_size):
+        start_idx = x_offsets[i]
+        end_idx = x_offsets[i + 1]
+        seq_length = end_idx - start_idx
+        if seq_length > 0:
+            jagged[start_idx:end_idx] = dense_tensor[i, :seq_length]
+    
+    return (jagged,)

@@ -264,7 +264,9 @@ class MovielensDataProcessor(DataProcessor):
         num_unique_items = len(set(ratings["movie_id"].values))
 
         # SASRec version
+        # 按时间戳排序，按用户分组
         ratings_group = ratings.sort_values(by=["unix_timestamp"]).groupby("user_id")
+        # 创建序列格式数据
         seq_ratings_data = pd.DataFrame(
             data={
                 "user_id": list(ratings_group.groups.keys()),
@@ -275,6 +277,7 @@ class MovielensDataProcessor(DataProcessor):
         )
 
         result = pd.DataFrame([[]])
+        # 序列长度统计
         for col in ["item_ids"]:
             result[col + "_mean"] = seq_ratings_data[col].apply(len).mean()
             result[col + "_min"] = seq_ratings_data[col].apply(len).min()

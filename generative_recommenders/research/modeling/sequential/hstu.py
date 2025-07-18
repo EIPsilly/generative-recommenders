@@ -44,6 +44,9 @@ from generative_recommenders.research.modeling.similarity_module import (
 )
 from generative_recommenders.research.rails.similarities.module import SimilarityModule
 
+from generative_recommenders.research.modeling.sequential.utils import (
+    _jagged_to_padded_dense, _dense_to_jagged,_asynchronous_complete_cumsum
+)
 
 TIMESTAMPS_KEY = "timestamps"
 
@@ -98,10 +101,10 @@ class RelativeBucketedTimeAndPositionBasedBias(RelativeAttentionBiasModule):
         super().__init__()
 
         self._max_seq_len: int = max_seq_len
-        self._ts_w = torch.nn.Parameter(
+        self._ts_w = torch.nn.Parameter( # 时间桶权重参数，每个时间桶对应一个可学习的偏置值
             torch.empty(num_buckets + 1).normal_(mean=0, std=0.02),
         )
-        self._pos_w = torch.nn.Parameter(
+        self._pos_w = torch.nn.Parameter( # 相对位置权重参数，处理序列中的位置关系，范围：从 -(N-1) 到 +(N-1)，共 2N - 1 个相对位置
             torch.empty(2 * max_seq_len - 1).normal_(mean=0, std=0.02),
         )
         self._num_buckets: int = num_buckets
@@ -115,15 +118,15 @@ class RelativeBucketedTimeAndPositionBasedBias(RelativeAttentionBiasModule):
     ) -> torch.Tensor:
         """
         Args:
-            all_timestamps: (B, N).
+            all_timestamps: (B, N). 每个样本（batch）中每个 item 的时间戳
         Returns:
-            (B, N, N).
+            (B, N, N). 用于加入注意力得分矩阵
         """
         B = all_timestamps.size(0)
         N = self._max_seq_len
-        t = F.pad(self._pos_w[: 2 * N - 1], [0, N]).repeat(N)
-        t = t[..., :-N].reshape(1, N, 3 * N - 2)
-        r = (2 * N - 1) // 2
+        t = F.pad(self._pos_w[: 2 * N - 1], [0, N]).repeat(N) # -> [2N - 1 + N] -> 长度 N*(3N - 1)，shape还是[1, N*(3N - 1)]
+        t = t[..., :-N].reshape(1, N, 3 * N - 2) # -> [1, N*(3N - 2)] -> [1, N, 3N - 2]
+        r = (2 * N - 1) // 2 # -> N - 1
 
         # [B, N + 1] to simplify tensor manipulations.
         ext_timestamps = torch.cat(
@@ -132,13 +135,13 @@ class RelativeBucketedTimeAndPositionBasedBias(RelativeAttentionBiasModule):
         # causal masking. Otherwise [:, :-1] - [:, 1:] works
         bucketed_timestamps = torch.clamp(
             self._bucketization_fn(
-                ext_timestamps[:, 1:].unsqueeze(2) - ext_timestamps[:, :-1].unsqueeze(1)
+                ext_timestamps[:, 1:].unsqueeze(2) - ext_timestamps[:, :-1].unsqueeze(1) # 计算时间差 [B, N, N]，每个样本（batch）中每个 item 与前一个 item 的时间差. $\delta_{i,j} = t_{i+1} - t_{j}$
             ),
             min=0,
             max=self._num_buckets,
         ).detach()
-        rel_pos_bias = t[:, :, r:-r]
-        rel_ts_bias = torch.index_select(
+        rel_pos_bias = t[:, :, r:-r] # 相对位置偏置，范围：从 -(N-1) 到 +(N-1)，共 2N - 1 个相对位置
+        rel_ts_bias = torch.index_select( # 再用 .index_select 取出对应时间 bucket 的偏置值：[B, N, N]
             self._ts_w, dim=0, index=bucketed_timestamps.view(-1)
         ).view(B, N, N)
         return rel_pos_bias + rel_ts_bias
@@ -194,10 +197,10 @@ def _hstu_attention_maybe_from_cache(
             .view(B, n, -1)
         )
     else:
-        padded_q = torch.ops.fbgemm.jagged_to_padded_dense(
+        padded_q = _jagged_to_padded_dense(
             values=q, offsets=[x_offsets], max_lengths=[n], padding_value=0.0
         )
-        padded_k = torch.ops.fbgemm.jagged_to_padded_dense(
+        padded_k = _jagged_to_padded_dense(
             values=k, offsets=[x_offsets], max_lengths=[n], padding_value=0.0
         )
 
@@ -210,11 +213,11 @@ def _hstu_attention_maybe_from_cache(
         qk_attn = qk_attn + rel_attn_bias(all_timestamps).unsqueeze(1)
     qk_attn = F.silu(qk_attn) / n
     qk_attn = qk_attn * invalid_attn_mask.unsqueeze(0).unsqueeze(0)
-    attn_output = torch.ops.fbgemm.dense_to_jagged(
+    attn_output = _dense_to_jagged(
         torch.einsum(
             "bhnm,bmhd->bnhd",
             qk_attn,
-            torch.ops.fbgemm.jagged_to_padded_dense(v, [x_offsets], [n]).reshape(
+            _jagged_to_padded_dense(v, [x_offsets], [n]).reshape(
                 B, n, num_heads, linear_dim
             ),
         ).reshape(B, n, num_heads * linear_dim),
@@ -340,9 +343,9 @@ class SequentialTransductionUnitJagged(torch.nn.Module):
             v = cached_v.index_copy_(dim=0, index=delta_x_offsets[0], source=v)
 
         B: int = x_offsets.size(0) - 1
-        if self._normalization == "rel_bias" or self._normalization == "hstu_rel_bias":
+        if self._normalization == "rel_bias" or self._normalization == "hstu_rel_bias": # HSTU注意力（默认）
             assert self._rel_attn_bias is not None
-            attn_output, padded_q, padded_k = _hstu_attention_maybe_from_cache(
+            attn_output, padded_q, padded_k = _hstu_attention_maybe_from_cache( # 支持缓存机制的高效注意力计算
                 num_heads=self._num_heads,
                 attention_dim=self._attention_dim,
                 linear_dim=self._linear_dim,
@@ -357,7 +360,7 @@ class SequentialTransductionUnitJagged(torch.nn.Module):
                 invalid_attn_mask=invalid_attn_mask,
                 rel_attn_bias=self._rel_attn_bias,
             )
-        elif self._normalization == "softmax_rel_bias":
+        elif self._normalization == "softmax_rel_bias": 
             if delta_x_offsets is not None:
                 B = x_offsets.size(0) - 1
                 padded_q, padded_k = cached_q, cached_k
@@ -389,10 +392,10 @@ class SequentialTransductionUnitJagged(torch.nn.Module):
                     .view(B, n, -1)
                 )
             else:
-                padded_q = torch.ops.fbgemm.jagged_to_padded_dense(
+                padded_q = _jagged_to_padded_dense(
                     values=q, offsets=[x_offsets], max_lengths=[n], padding_value=0.0
                 )
-                padded_k = torch.ops.fbgemm.jagged_to_padded_dense(
+                padded_k = _jagged_to_padded_dense(
                     values=k, offsets=[x_offsets], max_lengths=[n], padding_value=0.0
                 )
 
@@ -401,10 +404,10 @@ class SequentialTransductionUnitJagged(torch.nn.Module):
                 qk_attn = qk_attn + self._rel_attn_bias(all_timestamps)
             qk_attn = F.softmax(qk_attn / math.sqrt(self._attention_dim), dim=-1)
             qk_attn = qk_attn * invalid_attn_mask
-            attn_output = torch.ops.fbgemm.dense_to_jagged(
+            attn_output = _dense_to_jagged(
                 torch.bmm(
                     qk_attn,
-                    torch.ops.fbgemm.jagged_to_padded_dense(v, [x_offsets], [n]),
+                    _jagged_to_padded_dense(v, [x_offsets], [n]),
                 ),
                 [x_offsets],
             )[0]
@@ -520,7 +523,7 @@ class HSTUJagged(torch.nn.Module):
             x' = f(x), (B, N, D) x float
         """
         if len(x.size()) == 3:
-            x = torch.ops.fbgemm.dense_to_jagged(x, [x_offsets])[0]
+            x = _dense_to_jagged(x, [x_offsets])[0]
 
         jagged_x, cache_states = self.jagged_forward(
             x=x,
@@ -531,7 +534,7 @@ class HSTUJagged(torch.nn.Module):
             cache=cache,
             return_cache_states=return_cache_states,
         )
-        y = torch.ops.fbgemm.jagged_to_padded_dense(
+        y = _jagged_to_padded_dense(
             values=jagged_x,
             offsets=[x_offsets],
             max_lengths=[invalid_attn_mask.size(1)],
@@ -607,7 +610,7 @@ class HSTU(SequentialEncoderWithLearnedSimilarityModule):
                             max_seq_len=max_sequence_len
                             + max_output_len,  # accounts for next item.
                             num_buckets=128,
-                            bucketization_fn=lambda x: (
+                            bucketization_fn=lambda x: ( # 时间间隔到桶索引的映射函数
                                 torch.log(torch.abs(x).clamp(min=1)) / 0.301
                             ).long(),
                         )
@@ -695,13 +698,13 @@ class HSTU(SequentialEncoderWithLearnedSimilarityModule):
         float_dtype = user_embeddings.dtype
         user_embeddings, cached_states = self._hstu(
             x=user_embeddings,
-            x_offsets=torch.ops.fbgemm.asynchronous_complete_cumsum(past_lengths),
+            x_offsets=_asynchronous_complete_cumsum(past_lengths),
             all_timestamps=(
                 past_payloads[TIMESTAMPS_KEY]
                 if TIMESTAMPS_KEY in past_payloads
                 else None
             ),
-            invalid_attn_mask=1.0 - self._attn_mask.to(float_dtype),
+            invalid_attn_mask=1.0 - self._attn_mask.to(float_dtype), # 下三角矩阵，注意力掩码，用于屏蔽无效的注意力得分
             delta_x_offsets=delta_x_offsets,
             cache=cache,
             return_cache_states=return_cache_states,

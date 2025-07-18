@@ -48,7 +48,7 @@ class LocalEmbeddingModule(EmbeddingModule):
         self._item_emb = torch.nn.Embedding(
             num_items + 1, item_embedding_dim, padding_idx=0
         )
-        self.reset_params()
+        self.reset_params() # 使用截断正态分布初始化嵌入权重
 
     def debug_str(self) -> str:
         return f"local_emb_d{self._item_embedding_dim}"

@@ -25,6 +25,10 @@ from generative_recommenders.research.modeling.sequential.autoregressive_losses 
 
 from torch.utils.checkpoint import checkpoint
 
+from generative_recommenders.research.modeling.sequential.utils import (
+    _asynchronous_complete_cumsum,
+    _dense_to_jagged
+)
 
 class SampledSoftmaxLoss(AutoregressiveLoss):
     def __init__(
@@ -120,9 +124,9 @@ class SampledSoftmaxLoss(AutoregressiveLoss):
             "Invalid supervision ids size.",
         )
 
-        jagged_id_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
+        jagged_id_offsets = _asynchronous_complete_cumsum(lengths)
         jagged_supervision_ids = (
-            torch.ops.fbgemm.dense_to_jagged(
+            _dense_to_jagged(
                 supervision_ids.unsqueeze(-1).float(), [jagged_id_offsets]
             )[0]
             .squeeze(1)
@@ -131,7 +135,7 @@ class SampledSoftmaxLoss(AutoregressiveLoss):
         if "user_ids" in kwargs:
             # expand to jagged.
             max_length: int = int(lengths.max())
-            kwargs["user_ids"] = torch.ops.fbgemm.dense_to_jagged(
+            kwargs["user_ids"] = _dense_to_jagged(
                 kwargs["user_ids"]
                 .unsqueeze(1)
                 .expand(-1, max_length)
@@ -143,7 +147,7 @@ class SampledSoftmaxLoss(AutoregressiveLoss):
             [
                 (
                     "output_embeddings",
-                    torch.ops.fbgemm.dense_to_jagged(
+                    _dense_to_jagged(
                         output_embeddings,
                         [jagged_id_offsets],
                     )[0],
@@ -151,14 +155,14 @@ class SampledSoftmaxLoss(AutoregressiveLoss):
                 ("supervision_ids", jagged_supervision_ids),
                 (
                     "supervision_embeddings",
-                    torch.ops.fbgemm.dense_to_jagged(
+                    _dense_to_jagged(
                         supervision_embeddings,
                         [jagged_id_offsets],
                     )[0],
                 ),
                 (
                     "supervision_weights",
-                    torch.ops.fbgemm.dense_to_jagged(
+                    _dense_to_jagged(
                         supervision_weights.unsqueeze(-1),
                         [jagged_id_offsets],
                     )[0].squeeze(1),
@@ -175,16 +179,16 @@ class SampledSoftmaxLoss(AutoregressiveLoss):
             )
         else:
             return self.jagged_forward(
-                output_embeddings=torch.ops.fbgemm.dense_to_jagged(
+                output_embeddings=_dense_to_jagged(
                     output_embeddings,
                     [jagged_id_offsets],
                 )[0],
                 supervision_ids=jagged_supervision_ids,
-                supervision_embeddings=torch.ops.fbgemm.dense_to_jagged(
+                supervision_embeddings=_dense_to_jagged(
                     supervision_embeddings,
                     [jagged_id_offsets],
                 )[0],
-                supervision_weights=torch.ops.fbgemm.dense_to_jagged(
+                supervision_weights=_dense_to_jagged(
                     supervision_weights.unsqueeze(-1),
                     [jagged_id_offsets],
                 )[0].squeeze(1),

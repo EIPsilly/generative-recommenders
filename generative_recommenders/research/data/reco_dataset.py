@@ -47,14 +47,14 @@ def get_reco_dataset(
         train_dataset = DatasetV2(
             ratings_file=dp.output_format_csv(),
             padding_length=max_sequence_length + 1,  # target
-            ignore_last_n=1,
-            chronological=chronological,
-            sample_ratio=positional_sampling_ratio,
+            ignore_last_n=1,    # 忽略序列中最后一个交互，用作预测目标
+            chronological=chronological, # 是否按时间顺序处理序列
+            sample_ratio=positional_sampling_ratio, # 支持稀疏采样，减少训练数据量
         )
         eval_dataset = DatasetV2(
             ratings_file=dp.output_format_csv(),
             padding_length=max_sequence_length + 1,  # target
-            ignore_last_n=0,
+            ignore_last_n=0, # 使用完整序列进行评估
             chronological=chronological,
             sample_ratio=1.0,  # do not sample
         )
@@ -113,9 +113,9 @@ def get_reco_dataset(
         expected_max_item_id = dp.expected_max_item_id()
         assert expected_max_item_id is not None
         item_features: ItemFeatures = ItemFeatures(
-            max_ind_range=[63, 16383, 511],
+            max_ind_range=[63, 16383, 511], # 特征哈希范围
             num_items=expected_max_item_id + 1,
-            max_jagged_dimension=max_jagged_dimension,
+            max_jagged_dimension=max_jagged_dimension, # 最大特征维度
             lengths=[
                 torch.zeros((expected_max_item_id + 1,), dtype=torch.int64),
                 torch.zeros((expected_max_item_id + 1,), dtype=torch.int64),
@@ -143,9 +143,9 @@ def get_reco_dataset(
             genres = row["genres"].split("|")
             titles = row["cleaned_title"].split(" ")
             # print(f"{index}: genres{genres}, title{titles}")
-            genres_vector = [hash(x) % item_features.max_ind_range[0] for x in genres]
-            titles_vector = [hash(x) % item_features.max_ind_range[1] for x in titles]
-            years_vector = [hash(row["year"]) % item_features.max_ind_range[2]]
+            genres_vector = [hash(x) % item_features.max_ind_range[0] for x in genres] # 类型特征
+            titles_vector = [hash(x) % item_features.max_ind_range[1] for x in titles] # 标题特征
+            years_vector = [hash(row["year"]) % item_features.max_ind_range[2]] # 年份特征
             item_features.lengths[0][movie_id] = min(
                 len(genres_vector), max_jagged_dimension
             )

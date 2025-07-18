@@ -200,7 +200,7 @@ def generate_sparse_seq_len(
             dtype=torch.int,
         )
 
-
+# Stochastic Length，对应论文公式4
 def apply_sampling(
     lengths: torch.Tensor,
     alpha: float,

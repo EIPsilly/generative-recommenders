@@ -51,18 +51,21 @@ class LearnablePositionalEmbeddingInputFeaturesPreprocessor(
         super().__init__()
 
         self._embedding_dim: int = embedding_dim
+        # 可学习的 torch.nn.Embedding，大小为 [max_seq_len, embedding_dim]
+        # 作用：每个位置 i 对应一个向量 PE_i
         self._pos_emb: torch.nn.Embedding = torch.nn.Embedding(
             max_sequence_len,
             self._embedding_dim,
         )
         self._dropout_rate: float = dropout_rate
+        # 用于 dropout 操作，防止过拟合
         self._emb_dropout = torch.nn.Dropout(p=dropout_rate)
         self.reset_state()
 
     def debug_str(self) -> str:
         return f"posi_d{self._dropout_rate}"
 
-    def reset_state(self) -> None:
+    def reset_state(self) -> None: # 截断正态分布初始化位置嵌入
         truncated_normal(
             self._pos_emb.weight.data,
             mean=0.0,
@@ -71,19 +74,21 @@ class LearnablePositionalEmbeddingInputFeaturesPreprocessor(
 
     def forward(
         self,
-        past_lengths: torch.Tensor,
-        past_ids: torch.Tensor,
-        past_embeddings: torch.Tensor,
-        past_payloads: Dict[str, torch.Tensor],
+        past_lengths: torch.Tensor, # 每个用户序列长度
+        past_ids: torch.Tensor, # 每个用户序列的物品ID
+        past_embeddings: torch.Tensor, # 每个用户序列的物品嵌入
+        past_payloads: Dict[str, torch.Tensor], # 每个用户序列的额外信息
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, N = past_ids.size()
         D = past_embeddings.size(-1)
-
+        # 对 token embedding 乘以 sqrt(D) ，使其方差为D，保持 scale
+        # 每个位置 [0, 1, 2, ..., N-1] 都有一个嵌入向量 PE_i，对每个 batch 重复，shape 为 [B, N, D]
         user_embeddings = past_embeddings * (self._embedding_dim**0.5) + self._pos_emb(
             torch.arange(N, device=past_ids.device).unsqueeze(0).repeat(B, 1)
         )
         user_embeddings = self._emb_dropout(user_embeddings)
 
+        # 如果 past_ids == 0（表示 padding），则把对应位置的嵌入置零
         valid_mask = (past_ids != 0).unsqueeze(-1).float()  # [B, N, 1]
         user_embeddings *= valid_mask
         return past_lengths, user_embeddings, valid_mask

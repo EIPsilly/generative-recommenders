@@ -69,7 +69,7 @@ class DatasetV2(torch.utils.data.Dataset):
         user_id = data.user_id
 
         def eval_as_list(x: str, ignore_last_n: int) -> List[int]:
-            y = eval(x)
+            y = eval(x) # 将存储的字符串"[1,2,3]"转换为实际列表
             y_list = [y] if type(y) == int else list(y)
             if ignore_last_n > 0:
                 # for training data creation
@@ -100,6 +100,7 @@ class DatasetV2(torch.utils.data.Dataset):
         else:
             sampling_kept_mask = None
 
+        # 处理物品ID序列
         movie_history, movie_history_len = eval_int_list(
             data.sequence_item_ids,
             self._padding_length,
@@ -107,6 +108,7 @@ class DatasetV2(torch.utils.data.Dataset):
             shift_id_by=self._shift_id_by,
             sampling_kept_mask=sampling_kept_mask,
         )
+        # 处理评分序列
         movie_history_ratings, ratings_len = eval_int_list(
             data.sequence_ratings,
             self._padding_length,
@@ -114,6 +116,7 @@ class DatasetV2(torch.utils.data.Dataset):
             0,
             sampling_kept_mask=sampling_kept_mask,
         )
+        # 处理时间戳序列
         movie_timestamps, timestamps_len = eval_int_list(
             data.sequence_timestamps,
             self._padding_length,
@@ -133,7 +136,7 @@ class DatasetV2(torch.utils.data.Dataset):
         ) -> List[int]:
             y_len = len(y)
             if y_len < target_len:
-                y = y + [0] * (target_len - y_len)
+                y = y + [0] * (target_len - y_len) # 用0填充
             else:
                 if not chronological:
                     y = y[:target_len]
@@ -142,14 +145,17 @@ class DatasetV2(torch.utils.data.Dataset):
             assert len(y) == target_len
             return y
 
-        historical_ids = movie_history[1:]
-        historical_ratings = movie_history_ratings[1:]
-        historical_timestamps = movie_timestamps[1:]
-        target_ids = movie_history[0]
-        target_ratings = movie_history_ratings[0]
-        target_timestamps = movie_timestamps[0]
+        # 分离历史和目标
+        historical_ids = movie_history[1:]      # 历史交互物品
+        historical_ratings = movie_history_ratings[1:]  # 历史评分
+        historical_timestamps = movie_timestamps[1:]    # 历史时间戳
+
+        target_ids = movie_history[0]          # 预测目标物品
+        target_ratings = movie_history_ratings[0]      # 目标评分
+        target_timestamps = movie_timestamps[0]        # 目标时间戳
+
         if self._chronological:
-            historical_ids.reverse()
+            historical_ids.reverse()      # 按时间顺序排列
             historical_ratings.reverse()
             historical_timestamps.reverse()
 
@@ -183,8 +189,8 @@ class DatasetV2(torch.utils.data.Dataset):
             "historical_timestamps": torch.tensor(
                 historical_timestamps, dtype=torch.int64
             ),
-            "history_lengths": history_length,
-            "target_ids": target_ids,
+            "history_lengths": history_length,  # 实际历史长度
+            "target_ids": target_ids,           # 预测目标
             "target_ratings": target_ratings,
             "target_timestamps": target_timestamps,
         }
