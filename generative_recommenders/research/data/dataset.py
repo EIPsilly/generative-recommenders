@@ -184,15 +184,15 @@ class DatasetV2(torch.utils.data.Dataset):
         # print(historical_ids, historical_ratings, historical_timestamps, target_ids, target_ratings, target_timestamps)
         ret = {
             "user_id": user_id,
-            "historical_ids": torch.tensor(historical_ids, dtype=torch.int64),
-            "historical_ratings": torch.tensor(historical_ratings, dtype=torch.int64),
-            "historical_timestamps": torch.tensor(
+            "historical_ids": torch.tensor(historical_ids, dtype=torch.int64), # 历史交互物品
+            "historical_ratings": torch.tensor(historical_ratings, dtype=torch.int64), # 历史评分
+            "historical_timestamps": torch.tensor( # 历史时间戳
                 historical_timestamps, dtype=torch.int64
             ),
-            "history_lengths": history_length,  # 实际历史长度
+            "history_lengths": history_length,  # 实际序列长度
             "target_ids": target_ids,           # 预测目标
-            "target_ratings": target_ratings,
-            "target_timestamps": target_timestamps,
+            "target_ratings": target_ratings,   # 目标打分
+            "target_timestamps": target_timestamps, #目标时间戳
         }
         return ret
 

@@ -83,12 +83,12 @@ def movielens_seq_features_from_row(
         )
         # print(f"historical_ids.size()={historical_ids.size()}, historical_timestamps.size()={historical_timestamps.size()}")
     features = SequentialFeatures(
-        past_lengths=historical_lengths,
-        past_ids=historical_ids,
+        past_lengths=historical_lengths, # tensor[128]
+        past_ids=historical_ids, # tensor[128, 211]，最后11为是填充的0
         past_embeddings=None,
         past_payloads={
-            "timestamps": historical_timestamps,
-            "ratings": historical_ratings,
+            "timestamps": historical_timestamps,  # tensor[128, 211]，最后11为是填充的0
+            "ratings": historical_ratings,  # tensor[128, 211]，最后11为是填充的0
         },
     )
     return features, target_ids, target_ratings

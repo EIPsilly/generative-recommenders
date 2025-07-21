@@ -169,9 +169,9 @@ def get_reco_dataset(
         all_item_ids = [x + 1 for x in range(max_item_id)]  # pyre-ignore [6]
 
     return RecoDataset(
-        max_sequence_length=max_sequence_length,
-        num_unique_items=dp.expected_num_unique_items(),  # pyre-ignore [6]
-        max_item_id=max_item_id,  # pyre-ignore [6]
+        max_sequence_length=max_sequence_length, # 200 ml-1m
+        num_unique_items=dp.expected_num_unique_items(),  # pyre-ignore [6] 3760 ml-1m
+        max_item_id=max_item_id,  # pyre-ignore [6] 3952 ml-1m
         all_item_ids=all_item_ids,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,

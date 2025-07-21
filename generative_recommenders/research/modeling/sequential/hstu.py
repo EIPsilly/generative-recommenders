@@ -135,7 +135,7 @@ class RelativeBucketedTimeAndPositionBasedBias(RelativeAttentionBiasModule):
         # causal masking. Otherwise [:, :-1] - [:, 1:] works
         bucketed_timestamps = torch.clamp(
             self._bucketization_fn(
-                ext_timestamps[:, 1:].unsqueeze(2) - ext_timestamps[:, :-1].unsqueeze(1) # 计算时间差 [B, N, N]，每个样本（batch）中每个 item 与前一个 item 的时间差. $\delta_{i,j} = t_{i+1} - t_{j}$
+                ext_timestamps[:, 1:].unsqueeze(2) - ext_timestamps[:, :-1].unsqueeze(1) # 计算时间差 [B, N, N]，$\delta_{i,j} = t_{i+1} - t_{j}$
             ),
             min=0,
             max=self._num_buckets,
@@ -523,7 +523,8 @@ class HSTUJagged(torch.nn.Module):
             x' = f(x), (B, N, D) x float
         """
         if len(x.size()) == 3:
-            x = _dense_to_jagged(x, [x_offsets])[0]
+            # 将密集张量转换为稀疏张量. [128, 211, 50] -> [12905, 50]。12905是把有效数据都拼起来
+            x = _dense_to_jagged(x, [x_offsets])[0] 
 
         jagged_x, cache_states = self.jagged_forward(
             x=x,

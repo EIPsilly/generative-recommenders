@@ -163,7 +163,7 @@ def train_fn(
 
     dataset = get_reco_dataset(
         dataset_name=dataset_name,
-        max_sequence_length=max_sequence_length,
+        max_sequence_length=max_sequence_length, # 200 ml-1m
         chronological=True,
         positional_sampling_ratio=positional_sampling_ratio,
     )
@@ -188,39 +188,40 @@ def train_fn(
     model_debug_str = main_module
     if embedding_module_type == "local":
         embedding_module: EmbeddingModule = LocalEmbeddingModule( # 每个物品学习唯一的向量表示
-            num_items=dataset.max_item_id,
-            item_embedding_dim=item_embedding_dim,
+            num_items=dataset.max_item_id, # 3952 ml-1m
+            item_embedding_dim=item_embedding_dim, # 50 ml-1m
         )
     else:
         raise ValueError(f"Unknown embedding_module_type {embedding_module_type}")
     model_debug_str += f"-{embedding_module.debug_str()}"
 
     interaction_module, interaction_module_debug_str = get_similarity_function(
-        module_type=interaction_module_type,
-        query_embedding_dim=item_embedding_dim,
-        item_embedding_dim=item_embedding_dim,
+        module_type=interaction_module_type, # DotProduct ml-1m
+        query_embedding_dim=item_embedding_dim, # 50 ml-1m
+        item_embedding_dim=item_embedding_dim, # 50 ml-1m
     )
 
     assert (
         user_embedding_norm == "l2_norm" or user_embedding_norm == "layer_norm"
     ), f"Not implemented for {user_embedding_norm}"
     output_postproc_module = (
-        L2NormEmbeddingPostprocessor( # L2范数标准化
-            embedding_dim=item_embedding_dim,
+        L2NormEmbeddingPostprocessor( # L2范数标准化 对HSTU输出的user_embedding使用
+            embedding_dim=item_embedding_dim, # 50 ml-1m
             eps=1e-6,
         )
-        if user_embedding_norm == "l2_norm"
+        if user_embedding_norm == "l2_norm" # l2_norm ml-1m
         else LayerNormEmbeddingPostprocessor( # 层标准化
             embedding_dim=item_embedding_dim,
             eps=1e-6,
         )
     )
     input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor( # 为序列中的每个位置学习特定的嵌入表示
-        max_sequence_len=dataset.max_sequence_length + gr_output_length + 1,
-        embedding_dim=item_embedding_dim,
+        max_sequence_len=dataset.max_sequence_length + gr_output_length + 1, # 200 + 10 + 1 = 211 ml-1m,
+        embedding_dim=item_embedding_dim, # 50 ml-1m
         dropout_rate=dropout_rate,
     )
-
+    
+    # 构建HUST
     model = get_sequential_encoder(
         module_type=main_module,
         max_sequence_length=dataset.max_sequence_length,
@@ -239,7 +240,7 @@ def train_fn(
         loss_debug_str = loss_debug_str[:-4]
         assert temperature == 1.0
         ar_loss = BCELoss(temperature=temperature, model=model)
-    elif loss_module == "SampledSoftmaxLoss":
+    elif loss_module == "SampledSoftmaxLoss": # ssl ml-1m
         loss_debug_str = "ssl"
         if temperature != 1.0:
             loss_debug_str += f"-t{temperature}"
@@ -343,7 +344,7 @@ def train_fn(
             seq_features, target_ids, target_ratings = movielens_seq_features_from_row(
                 row,
                 device=device,
-                max_output_length=gr_output_length + 1,
+                max_output_length=gr_output_length + 1, # 10+1=11 ml-1m
             )
 
             if (batch_id % eval_interval) == 0:
@@ -389,7 +390,7 @@ def train_fn(
                 dim=1,
                 index=seq_features.past_lengths.view(-1, 1),
                 src=target_ids.view(-1, 1),
-            )
+            ) # 把目标id拼接到最后
 
             opt.zero_grad()
             input_embeddings = model.module.get_item_embeddings(seq_features.past_ids)
@@ -424,7 +425,7 @@ def train_fn(
                 supervision_weights=ar_mask.float(),
                 negatives_sampler=negatives_sampler,
                 **seq_features.past_payloads,
-            )  # [B, N]
+            )  # [B, N]···
 
             main_loss = loss.detach().clone()
             loss = get_weighted_loss(loss, aux_losses, weights=loss_weights or {})

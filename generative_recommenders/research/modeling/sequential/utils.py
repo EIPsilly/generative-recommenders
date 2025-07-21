@@ -91,45 +91,7 @@ def get_current_embeddings(
     return encoded_embeddings.reshape(-1, D)[flattened_offsets, :].reshape(B, D)
 
 
-def jagged_or_dense_repeat_interleave_dim0(
-    x: torch.Tensor, lengths: torch.Tensor, repeats: int
-) -> torch.Tensor:
-    if len(x.size()) == 3:
-        return x.repeat_interleave(repeats, dim=0)
-    else:
-        assert len(x.size()) == 2, f"x.size() = {x.size()}"
-        padded_x = torch.ops.fbgemm.jagged_to_padded_dense(
-            values=x,
-            offsets=[torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)],
-            max_lengths=[lengths.max()],
-            padding_value=0.0,
-        )
-        lengths = lengths.repeat_interleave(repeats, dim=0)
-        return torch.ops.fbgemm.dense_to_jagged(
-            padded_x.repeat_interleave(repeats, dim=0),
-            [torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)],
-        )[0]
-
-
-def jagged_or_dense_index_select_dim0(
-    x: torch.Tensor, lengths: torch.Tensor, indices: torch.Tensor
-) -> torch.Tensor:
-    if len(x.size()) == 3:
-        return x[indices, :, :]
-    else:
-        assert len(x.size()) == 2, f"x.size() = {x.size()}"
-        padded_x = torch.ops.fbgemm.jagged_to_padded_dense(
-            values=x,
-            offsets=[torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)],
-            max_lengths=[lengths.max()],
-            padding_value=0.0,
-        )
-        return torch.ops.fbgemm.dense_to_jagged(
-            padded_x[indices, :],
-            [torch.ops.fbgemm.asynchronous_complete_cumsum(lengths[indices])],
-        )[0]
-
-# 用于将序列长度转换为偏移量，返回每个序列起始位置的索引（offsets），
+# 将每个序列的长度（lengths）转换为偏移量（offsets），即计算累积和并在最前面添加 0。
 def _asynchronous_complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
     """
     CPU-compatible replacement for torch.ops.fbgemm.asynchronous_complete_cumsum.
@@ -144,7 +106,7 @@ def _asynchronous_complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
     return torch.cat([torch.zeros(1, device=lengths.device, dtype=lengths.dtype), 
                      torch.cumsum(lengths, dim=0)])
 
-
+# 将 稀疏表示（jagged） 转换为 稠密张量（dense）
 def _jagged_to_padded_dense(values: torch.Tensor, offsets: List[torch.Tensor], 
                            max_lengths: List[int], padding_value: float = 0.0) -> torch.Tensor:
     """
@@ -181,7 +143,8 @@ def _jagged_to_padded_dense(values: torch.Tensor, offsets: List[torch.Tensor],
     
     return padded
 
-
+# 将 稠密张量 转换回 稀疏表示（jagged tensor）
+# 根据 offsets 指示的长度，从 dense tensor 中提取每段有效数据，拼接成 jagged 格式（返回一个元组）
 def _dense_to_jagged(dense_tensor: torch.Tensor, offsets: List[torch.Tensor]) -> Tuple[torch.Tensor, ...]:
     """
     CPU-compatible replacement for torch.ops.fbgemm.dense_to_jagged.
