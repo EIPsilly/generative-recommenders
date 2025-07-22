@@ -772,9 +772,12 @@ class HSTU(SequentialEncoderWithLearnedSimilarityModule):
             cache=cache,
             return_cache_states=return_cache_states,
         )  # [B, N, D]
+        # 从变长序列的编码结果中提取每个用户的当前状态嵌入（即序列最后一个有效位置的嵌入）。
         current_embeddings = get_current_embeddings(
             lengths=past_lengths, encoded_embeddings=encoded_seq_embeddings
         )
+        # 支持返回中间缓存状态，用于增量推理
+        # 在自回归生成中可以避免重复计算
         if return_cache_states:
             return current_embeddings, cache_states
         else:

@@ -47,32 +47,32 @@ class SampledSoftmaxLoss(AutoregressiveLoss):
 
     def jagged_forward(  # pyre-ignore [15]
         self,
-        output_embeddings: torch.Tensor,
-        supervision_ids: torch.Tensor,
-        supervision_embeddings: torch.Tensor,
-        supervision_weights: torch.Tensor,
-        negatives_sampler: NegativesSampler,
+        output_embeddings: torch.Tensor, # 模型输出的嵌入向量
+        supervision_ids: torch.Tensor, # 正样本ID
+        supervision_embeddings: torch.Tensor, # 正样本嵌入
+        supervision_weights: torch.Tensor, # 正样本权重
+        negatives_sampler: NegativesSampler, # 负样本采样器
         **kwargs,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         assert output_embeddings.size() == supervision_embeddings.size()
         assert supervision_ids.size() == supervision_embeddings.size()[:-1]
         assert supervision_ids.size() == supervision_weights.size()
 
-        sampled_ids, sampled_negative_embeddings = negatives_sampler(
+        sampled_ids, sampled_negative_embeddings = negatives_sampler(   # 采样负样本ID和对应的嵌入
             positive_ids=supervision_ids,
             num_to_sample=self._num_to_sample,
         )
         positive_embeddings = negatives_sampler.normalize_embeddings(
             supervision_embeddings
         )
-        positive_logits, aux_losses = self._model.similarity_fn(
+        positive_logits, aux_losses = self._model.similarity_fn(    # 计算正样本的相似度得分 ml-1m DotProductSimilarity
             query_embeddings=output_embeddings,  # [B, D] = [N', D]
             item_ids=supervision_ids.unsqueeze(1),  # [N', 1]
             item_embeddings=positive_embeddings.unsqueeze(1),  # [N', D] -> [N', 1, D]
             **kwargs,
         )
         positive_logits = positive_logits / self._softmax_temperature  # [0]
-        sampled_negatives_logits, _ = self._model.similarity_fn(
+        sampled_negatives_logits, _ = self._model.similarity_fn(    # 计算负样本的相似度得分 ml-1m DotProductSimilarity
             query_embeddings=output_embeddings,  # [N', D]
             item_ids=sampled_ids,  # [N', R]
             item_embeddings=sampled_negative_embeddings,  # [N', R, D]

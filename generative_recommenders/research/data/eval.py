@@ -56,11 +56,11 @@ def get_eval_state(
     # pyre-fixme[29]: `Union[Tensor, Module]` is not a function.
     eval_negative_embeddings = negatives_sampler.normalize_embeddings(
         # pyre-fixme[29]: `Union[Tensor, Module]` is not a function.
-        model.get_item_embeddings(eval_negatives_ids)
+        model.get_item_embeddings(eval_negatives_ids)   # ml-1m 使用 LocalEmbeddingModule 获取样本的embedding
     )
     if float_dtype is not None:
         eval_negative_embeddings = eval_negative_embeddings.to(float_dtype)
-    candidates = CandidateIndex(
+    candidates = CandidateIndex(    # 候选索引
         ids=eval_negatives_ids,
         embeddings=eval_negative_embeddings,
     )
@@ -105,7 +105,7 @@ def eval_metrics_v2_from_tensors(
 
     # computes ro- part exactly once.
     # pyre-fixme[29]: `Union[Tensor, Module]` is not a function.
-    shared_input_embeddings = model.encode(
+    shared_input_embeddings = model.encode( # 编码用户历史行为序列
         past_lengths=seq_features.past_lengths,
         past_ids=seq_features.past_ids,
         # pyre-fixme[29]: `Union[Tensor, Module]` is not a function.
@@ -152,7 +152,17 @@ def eval_metrics_v2_from_tensors(
         eval_top_k_prs = torch.cat(eval_top_k_prs_all, dim=0)
 
     assert eval_top_k_ids.size(1) == k
-    _, eval_rank_indices = torch.max(
+
+    # 计算目标物品在推荐列表中的排名索引 
+    # 示例：用户A的推荐列表和目标
+    # eval_top_k_ids[A] = [item5, item2, item8, item1, item9]  # Top-5推荐
+    # target_ids[A] = [item8]                                  # 真实目标
+
+    # 拼接: [item5, item2, item8, item1, item9, item8]
+    # 比较: [False, False, True, False, False, True]
+    # torch.max返回最大值的索引: 2 (第一个True的位置)
+    # eval_ranks = 2 + 1 = 3  # 目标物品排在第3位
+    _, eval_rank_indices = torch.max(   
         torch.cat(
             [eval_top_k_ids, target_ids],
             dim=1,
@@ -197,6 +207,7 @@ def eval_metrics_v2_from_tensors(
         "hr@1000": (eval_ranks <= 1000),
         "mrr": torch.div(1.0, eval_ranks),
     }
+    # 只对高评分物品（评分≥4）计算指标，更关注用户真正喜欢的物品。
     if target_ratings is not None:
         target_ratings = target_ratings.squeeze(1)  # [B]
         output["ndcg@10_>=4"] = torch.where(

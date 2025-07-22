@@ -38,6 +38,7 @@ class MIPSTopKModule(TopKModule):
         self._item_ids: torch.Tensor = item_ids
 
 
+# 获取 Top-K 的分数和 ID
 class MIPSBruteForceTopK(MIPSTopKModule):
     def __init__(
         self,
@@ -69,7 +70,7 @@ class MIPSBruteForceTopK(MIPSTopKModule):
         Returns:
             Tuple of (top_k_scores x float, top_k_ids x int), both of shape (B, K,)
         """
-        # (B, X,)
+        # (B, X,)，计算相似度
         all_logits = torch.mm(query_embeddings, self._item_embeddings_t)
         top_k_logits, top_k_indices = torch.topk(
             all_logits,

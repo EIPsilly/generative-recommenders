@@ -85,13 +85,29 @@ def get_current_embeddings(
         (B, D,) x float, where [i, :] == encoded_embeddings[i, lengths[i] - 1, :]
     """
     B, N, D = encoded_embeddings.size()
+    # 假设：B=3, N=5, lengths=[3, 2, 4]
+    # 
+    # lengths - 1 = [2, 1, 3]  # 每个序列的最后有效位置（0-indexed）
+    # torch.arange(0, 3) * N = [0, 5, 10]  # 每个样本在展平数组中的起始偏移
+    # 
+    # flattened_offsets = [2, 1, 3] + [0, 5, 10] = [2, 6, 13]
     flattened_offsets = (lengths - 1) + torch.arange(
         start=0, end=B, step=1, dtype=lengths.dtype, device=lengths.device
     ) * N
+    # 原始形状: (3, 5, D)
+    # [
+    #   [[emb_0_0], [emb_0_1], [emb_0_2], [pad], [pad]],     # 用户0，长度=3
+    #   [[emb_1_0], [emb_1_1], [pad], [pad], [pad]],         # 用户1，长度=2  
+    #   [[emb_2_0], [emb_2_1], [emb_2_2], [emb_2_3], [pad]] # 用户2，长度=4
+    # ]
+    # 展平后: (15, D)
+    # 索引: [2, 6, 13] 对应 [emb_0_2, emb_1_1, emb_2_3]
+    #
+    # 结果: (3, D) 每个用户的最后有效嵌入
     return encoded_embeddings.reshape(-1, D)[flattened_offsets, :].reshape(B, D)
 
 
-# 将每个序列的长度（lengths）转换为偏移量（offsets），即计算累积和并在最前面添加 0。
+# 将每个序列的长度（lengths）转换为偏移量（offsets），即计算累积和并在最前面添加 0。  [4, 5, 6] -> [0, 4, 9, 15]
 def _asynchronous_complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
     """
     CPU-compatible replacement for torch.ops.fbgemm.asynchronous_complete_cumsum.
@@ -106,7 +122,7 @@ def _asynchronous_complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
     return torch.cat([torch.zeros(1, device=lengths.device, dtype=lengths.dtype), 
                      torch.cumsum(lengths, dim=0)])
 
-# 将 稀疏表示（jagged） 转换为 稠密张量（dense）
+# 将 稀疏表示（jagged） 转换为 稠密张量（dense） [12905, 50] -> [128, 211, 50]
 def _jagged_to_padded_dense(values: torch.Tensor, offsets: List[torch.Tensor], 
                            max_lengths: List[int], padding_value: float = 0.0) -> torch.Tensor:
     """
@@ -144,7 +160,7 @@ def _jagged_to_padded_dense(values: torch.Tensor, offsets: List[torch.Tensor],
     return padded
 
 # 将 稠密张量 转换回 稀疏表示（jagged tensor）
-# 根据 offsets 指示的长度，从 dense tensor 中提取每段有效数据，拼接成 jagged 格式（返回一个元组）
+# 根据 offsets 指示的长度，从 dense tensor 中提取每段有效数据，拼接成 jagged 格式（返回一个元组） [128, 211, 50] -> [12905, 50]
 def _dense_to_jagged(dense_tensor: torch.Tensor, offsets: List[torch.Tensor]) -> Tuple[torch.Tensor, ...]:
     """
     CPU-compatible replacement for torch.ops.fbgemm.dense_to_jagged.

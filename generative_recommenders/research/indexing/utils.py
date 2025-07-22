@@ -29,7 +29,7 @@ def get_top_k_module(
     item_embeddings: torch.Tensor,
     item_ids: torch.Tensor,
 ) -> TopKModule:
-    if top_k_method == "MIPSBruteForceTopK":
+    if top_k_method == "MIPSBruteForceTopK": # ml-1m 
         top_k_module = MIPSBruteForceTopK(
             item_embeddings=item_embeddings,
             item_ids=item_ids,

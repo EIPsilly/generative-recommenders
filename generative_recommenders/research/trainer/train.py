@@ -352,12 +352,12 @@ def train_fn(
 
                 eval_state = get_eval_state(
                     model=model.module,
-                    all_item_ids=dataset.all_item_ids,
+                    all_item_ids=dataset.all_item_ids,  # 数据集中所有电影id
                     negatives_sampler=negatives_sampler,
                     top_k_module_fn=lambda item_embeddings, item_ids: get_top_k_module(
                         top_k_method=top_k_method,
                         model=model.module,
-                        item_embeddings=item_embeddings,
+                        item_embeddings=item_embeddings,    # 数据集中所有电影的嵌入
                         item_ids=item_ids,
                     ),
                     device=device,
@@ -385,14 +385,16 @@ def train_fn(
                 model.train()
 
             # TODO: consider separating this out?
+            # 将目标物品的 ID（target_ids）插入到用户历史行为序列（seq_features.past_ids）的末尾位置。
             B, N = seq_features.past_ids.shape
             seq_features.past_ids.scatter_(
                 dim=1,
                 index=seq_features.past_lengths.view(-1, 1),
                 src=target_ids.view(-1, 1),
-            ) # 把目标id拼接到最后
+            )
 
             opt.zero_grad()
+            # 获取输入物品的嵌入（input_embeddings）
             input_embeddings = model.module.get_item_embeddings(seq_features.past_ids)
             seq_embeddings = model(
                 past_lengths=seq_features.past_lengths,
@@ -416,6 +418,12 @@ def train_fn(
                 #  `_item_emb`.
                 negatives_sampler._item_emb = model.module._embedding_module._item_emb
 
+            # | 时间步 | input_ids | output_embeddings | supervision_ids | supervision_embeddings | 学习目标 |
+            # |--------|-----------|-------------------|-----------------|------------------------|----------|
+            # | 0 | item0 | seq_embeddings[0] | item1 | emb(item1) | 位置0输出 → 预测item1 |
+            # | 1 | item1 | seq_embeddings[1] | item2 | emb(item2) | 位置1输出 → 预测item2 |
+            # | 2 | item2 | seq_embeddings[2] | item3 | emb(item3) | 位置2输出 → 预测item3 |
+            # | 3 | item3 | seq_embeddings[3] | target_item | emb(target_item) | 位置3输出 → 预测target_item |
             ar_mask = supervision_ids[:, 1:] != 0
             loss, aux_losses = ar_loss(
                 lengths=seq_features.past_lengths,  # [B],

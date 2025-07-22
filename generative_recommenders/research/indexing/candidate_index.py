@@ -108,7 +108,7 @@ class CandidateIndex(object):
                 invalid_ids=invalid_ids,
                 debug_path=self._debug_path,
             )
-
+    # 从给定的查询嵌入中获取 Top-K 的物品 ID 和分数
     def get_top_k_outputs(
         self,
         query_embeddings: torch.Tensor,
@@ -140,22 +140,27 @@ class CandidateIndex(object):
         if invalid_ids is not None:
             max_num_invalid_ids = invalid_ids.size(1)
 
-        k_prime = min(k + max_num_invalid_ids, self.num_objects)
+        k_prime = min(k + max_num_invalid_ids, self.num_objects)    # 过滤后物品数量不足的问题
+        # 获取 Top-K 的分数和 序列号
         top_k_prime_scores, top_k_prime_ids = top_k_module(
             query_embeddings=query_embeddings, k=k_prime
         )
         # Masks out invalid items rowwise.
         if invalid_ids is not None:
+            # 根据 top_k_prime_ids选择有效的id， 候选物品在用户历史中出现过，则不推荐
             id_is_valid = ~(
                 (top_k_prime_ids.unsqueeze(2) == invalid_ids.unsqueeze(1)).max(2)[0]
             )  # [B, K + N_0]
+            # 使用累积求和确保每个用户最多获得k个有效推荐
             id_is_valid = torch.logical_and(
                 id_is_valid, torch.cumsum(id_is_valid.int(), dim=1) <= k
             )
+            # 获取非0的索引，并取前k个
             # [[1, 0, 1, 0], [0, 1, 1, 1]], k=2 -> [[0, 2], [1, 2]]
             top_k_rowwise_offsets = torch.nonzero(id_is_valid, as_tuple=True)[1].view(
                 -1, k
             )
+            # 根据 top_k_rowwise_offsets ，从 top_k_prime_scores 中获取对应的分数
             top_k_scores = torch.gather(
                 top_k_prime_scores, dim=1, index=top_k_rowwise_offsets
             )
