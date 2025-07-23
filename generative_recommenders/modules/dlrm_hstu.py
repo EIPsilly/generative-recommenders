@@ -128,7 +128,8 @@ class DlrmHSTU(HammerModule):
         logger.info(f"Initialize HSTU module with configs {hstu_configs}")
         self._hstu_configs = hstu_configs
         set_static_max_seq_lens([self._hstu_configs.max_seq_len])
-
+        
+        # 嵌入层初始化
         self._embedding_collection = EmbeddingCollection(
             tables=list(embedding_tables.values()),
             need_indices=False,
@@ -137,6 +138,7 @@ class DlrmHSTU(HammerModule):
 
         # multitask configs must be sorted by task types
         self._multitask_configs: List[TaskConfig] = hstu_configs.multitask_configs
+        # 多任务模块，支持多任务学习（点击、观看时长等多个目标）， 使用SwishLayerNorm激活函数
         self._multitask_module = DefaultMultitaskModule(
             task_configs=self._multitask_configs,
             embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
@@ -150,6 +152,7 @@ class DlrmHSTU(HammerModule):
         )
 
         # preprocessor setup
+        # 处理上下文特征和动作特征
         preprocessor = ContextualPreprocessor(
             input_embedding_dim=hstu_configs.hstu_embedding_table_dim,
             hidden_dim=hstu_configs.hstu_preprocessor_hidden_dim,
@@ -162,7 +165,7 @@ class DlrmHSTU(HammerModule):
             is_inference=is_inference,
         )
 
-        # positional encoder
+        # positional encoder 为序列数据添加位置编码和时间戳信息
         positional_encoder = HSTUPositionalEncoder(
             num_position_buckets=8192,
             num_time_buckets=2048,

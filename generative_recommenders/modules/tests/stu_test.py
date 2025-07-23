@@ -390,21 +390,29 @@ class StuTest(unittest.TestCase):
         stu.recursive_setattr("_hammer_kernel", HammerKernel.TRITON)
         stu.eval()
 
-        x_lengths = torch.randint(
+        # 测试参数设定
+        # batch_size = 2
+        # max_uih_len = 10          # 最大用户交互历史长度
+        # contextual_seq_len = 2    # 上下文序列长度  
+        # delta_size = 20           # 新增部分大小
+        # max_targets = 40          # 最大目标数
+        # embedding_dim = 64        # 嵌入维度
+        
+        x_lengths = torch.randint(  # 两个用户都是10
             max_uih_len, max_uih_len + 1, (batch_size,), device=device
         )
-        x_lengths = x_lengths + contextual_seq_len
-        max_seq_len = max_uih_len + contextual_seq_len
-        delta_size = 20
-        max_targets = delta_size * 2
+        x_lengths = x_lengths + contextual_seq_len  # [12, 12] 加上上下文
+        max_seq_len = max_uih_len + contextual_seq_len  # 最长长度 12
+        delta_size = 20  # 新增长度 
+        max_targets = delta_size * 2  # 最大目标数
         num_targets = torch.randint(
-            delta_size, max_targets + 1, size=(batch_size,), device=device
+            delta_size, max_targets + 1, size=(batch_size,), device=device  # 随机生成目标数量，用户1有25个目标，用户2有30个目标
         )
-        x_lengths = x_lengths + num_targets + contextual_seq_len
-        max_seq_len = max_seq_len + max_targets + contextual_seq_len
-        x_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(x_lengths)
-        total_seq_len = int(x_offsets[-1].cpu().item())
-        x = torch.randn(
+        x_lengths = x_lengths + num_targets + contextual_seq_len    # [12, 12] + [25, 30] + 2 = [39, 44]
+        max_seq_len = max_seq_len + max_targets + contextual_seq_len  # 最大可能长度 12 + 50 + 2 = 54
+        x_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(x_lengths)  # [0, 39, 83]  用户1: 0-38, 用户2: 39-82
+        total_seq_len = int(x_offsets[-1].cpu().item())  # 83
+        x = torch.randn( # 总共83个token，每个64维
             int(total_seq_len),
             embedding_dim,
             device=device,
@@ -412,14 +420,14 @@ class StuTest(unittest.TestCase):
 
         # default forward().
         ref_y = stu(
-            x=x,
-            x_lengths=x_lengths,
-            x_offsets=x_offsets,
-            max_seq_len=max_seq_len,
-            num_targets=num_targets,
+            x=x,    # 完整序列 [83, 64]
+            x_lengths=x_lengths, # [39, 44] 序列长度
+            x_offsets=x_offsets, # [0, 39, 83] 序列偏移量
+            max_seq_len=max_seq_len, # 最大可能长度 54
+            num_targets=num_targets, # [25, 30] 目标数量
         )
-        prime_lengths = x_lengths - delta_size
-        prime_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(prime_lengths)
+        prime_lengths = x_lengths - delta_size # 计算prime部分的长度（去掉最后delta_size=20个token） [39, 44] - 20 = [19, 24]
+        prime_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(prime_lengths)    # [0, 19, 43]
         _, ref_delta_y = split_2D_jagged(
             max_seq_len=max_seq_len,
             values=ref_y,
@@ -431,12 +439,16 @@ class StuTest(unittest.TestCase):
         )
 
         # cached forward().
+
+        # 分离结果：
+        # prime_x: [43, 64] - 前面部分，用于建立缓存
+        # delta_x: [40, 64] - 后面部分，用于增量计算
         prime_x, delta_x = split_2D_jagged(
             max_seq_len=max_seq_len,
-            values=x,
-            max_len_left=None,
-            max_len_right=delta_size,
-            offsets_left=prime_offsets,
+            values=x,   # 完整序列
+            max_len_left=None,  
+            max_len_right=delta_size,   # delta部分固定长度20
+            offsets_left=prime_offsets, # prime部分边界
             offsets_right=None,
             kernel=HammerKernel.TRITON,
         )
@@ -449,8 +461,20 @@ class StuTest(unittest.TestCase):
             max_kv_caching_len=max_seq_len - delta_size,
             kv_caching_lengths=x_lengths - delta_size,
         )
+
+        # 经过prime_x的前向传播后，STU内部建立了缓存：
+        # stu.k_cache = [
+        #     # 用户1的19个token对应的K值
+        #     k_user1_token1, k_user1_token2, ..., k_user1_token19,
+        #     # 用户2的24个token对应的K值  
+        #     k_user2_token1, k_user2_token2, ..., k_user2_token24
+        # ]  # 总共43个K值
+
+        # stu.v_cache = [...] # 对应的V值
+        # stu.kv_caching_offsets = [0, 19, 43]  # 缓存边界
+        # stu.max_kv_caching_len = 24  # 最大缓存长度
         delta_y = stu.cached_forward(
-            delta_x=delta_x,
+            delta_x=delta_x,    # delta_x: [40, 64] 增量计算
             num_targets=num_targets,
         )
 

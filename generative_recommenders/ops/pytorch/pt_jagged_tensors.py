@@ -36,28 +36,28 @@ def _concat_2D_jagged_jagged(
     offsets_left: torch.Tensor,
     offsets_right: torch.Tensor,
 ) -> torch.Tensor:
-    max_seq_len = max_len_left + max_len_right
-    lengths_left = offsets_left[1:] - offsets_left[:-1]
-    lengths_right = offsets_right[1:] - offsets_right[:-1]
+    max_seq_len = max_len_left + max_len_right  # 44
+    lengths_left = offsets_left[1:] - offsets_left[:-1]  # 缓存序列长度 [19, 24]
+    lengths_right = offsets_right[1:] - offsets_right[:-1]  # 新增序列长度 [20, 20]
     padded_left = torch.ops.fbgemm.jagged_to_padded_dense(
-        values=values_left,
-        offsets=[offsets_left],
-        max_lengths=[max_len_left],
+        values=values_left,             # [43, D]
+        offsets=[offsets_left],          # 缓存边界 [0, 19, 43]
+        max_lengths=[max_len_left],      # 缓存最大长度 24
         padding_value=0.0,
     )
     padded_right = torch.ops.fbgemm.jagged_to_padded_dense(
-        values=values_right,
-        offsets=[offsets_right],
-        max_lengths=[max_len_right],
+        values=values_right,             # [40, D]
+        offsets=[offsets_right],         # 新增边界 [0, 20, 40]
+        max_lengths=[max_len_right],     # 新增最大长度 20
         padding_value=0.0,
     )
     concatted_dense = torch.cat([padded_left, padded_right], dim=1)
     mask = fx_arange(max_seq_len, device=offsets_left.device).view(1, -1)
     mask = torch.logical_or(
-        mask < lengths_left.view(-1, 1),
-        torch.logical_and(
-            mask >= max_len_left,
-            mask < max_len_left + lengths_right.view(-1, 1),
+        mask < lengths_left.view(-1, 1), # 左侧有效掩码，0-18个有效，0-23个有效
+        torch.logical_and(  # 右侧有效掩码，用户1: 19-38位置有效，用户2: 24-43位置有效
+            mask >= max_len_left,   
+            mask < max_len_left + lengths_right.view(-1, 1),  
         ),
     )
     return concatted_dense.flatten(0, 1)[mask.view(-1), :]
@@ -82,13 +82,13 @@ def pytorch_concat_2D_jagged(
         offsets_left_non_optional = offsets_left
     if offsets_right is None:
         assert max_len_right is not None
-        B = values_right.shape[0] // max_len_right
+        B = values_right.shape[0] // max_len_right  # B = 40 // 20 = 2
         offsets_right_non_optional = max_len_right * torch.arange(
             B + 1, device=values_left.device
-        )
+        )   #  20 * [0, 1, 2] = [0, 20, 40]
     else:
         offsets_right_non_optional = offsets_right
-    max_len_left = (
+    max_len_left = (    # 缓存最大长度 24
         int(
             (offsets_left_non_optional[1:] - offsets_left_non_optional[:-1])
             .max()
@@ -97,7 +97,7 @@ def pytorch_concat_2D_jagged(
         if max_len_left is None
         else max_len_left
     )
-    max_len_right = (
+    max_len_right = (  # 新增最大长度 20
         int(
             (offsets_right_non_optional[1:] - offsets_right_non_optional[:-1])
             .max()
@@ -115,28 +115,46 @@ def pytorch_concat_2D_jagged(
         offsets_right=offsets_right_non_optional,
     )
 
-
+# 用户1历史: [item1, item2, item3, item4, item5] -> 新增 [item6]
+# 用户2历史: [itemA, itemB] -> 新增 [itemC, itemD] 
+# 用户3历史: [itemX] -> 新增 [itemY]
+# seq_offsets = [0, 6, 10, 12]      # 当前完整序列的边界  
+# kv_caching_lengths = [0, 5, 7, 8]    # 已缓存的长度
+# delta_offsets = [0, 1, 3, 4]
+# max_seq_len = 6                   # 当前批次的最大序列长度
 def _split_2D_jagged_jagged(
     max_seq_len: int,
     values: torch.Tensor,
     offsets_left: torch.Tensor,
     offsets_right: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    offsets = offsets_left + offsets_right
+    offsets = offsets_left + offsets_right  # 获得 values 的完整序列边界，[0, 5, 7, 8] + [0, 1, 3, 4] = [0, 6, 10, 12]
     padded_values = torch.ops.fbgemm.jagged_to_padded_dense(
         values=values,
         offsets=[offsets],
         max_lengths=[max_seq_len],
         padding_value=0.0,
     ).flatten(0, 1)
-    lengths_left = offsets_left[1:] - offsets_left[:-1]
-    lengths_right = offsets_right[1:] - offsets_right[:-1]
+    lengths_left = offsets_left[1:] - offsets_left[:-1]  # 获得 缓存 的序列长度，[5, 2, 1]    
+    lengths_right = offsets_right[1:] - offsets_right[:-1]  # 获得 新增 的序列长度，[1, 2, 1]
     mask = fx_arange(max_seq_len, device=values.device).view(1, -1)
     mask_left = mask < lengths_left.view(-1, 1)
+    # 缓存部分掩码
+    # mask_left = [
+    #   [True, True, True, True, True, False],    # 用户1: 前5个是缓存
+    #   [True, True, False, False, False, False], # 用户2: 前2个是缓存  
+    #   [True, False, False, False, False, False] # 用户3: 前1个是缓存
+    # ]
     mask_right = torch.logical_and(
         mask >= lengths_left.view(-1, 1),
         mask < (lengths_left + lengths_right).view(-1, 1),
     )
+    # 分离新增部分
+    # mask_right.view(-1) = [False, False, False, False, False, True,
+    #                        False, False, True, True, False, False,
+    #                        False, True, False, False, False, False]
+    # 结果: [item6, itemC, itemD, itemY]
+    # 返回: cache_k (缓存部分), delta_k (新增部分)
     return padded_values[mask_left.view(-1), :], padded_values[mask_right.view(-1), :]
 
 

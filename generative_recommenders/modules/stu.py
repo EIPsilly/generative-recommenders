@@ -63,13 +63,13 @@ class STU(HammerModule, abc.ABC):
 
 @dataclass
 class STULayerConfig:
-    embedding_dim: int
-    num_heads: int
-    hidden_dim: int
-    attention_dim: int
+    embedding_dim: int        # 嵌入维度
+    num_heads: int           # 注意力头数
+    hidden_dim: int          # 隐藏层维度
+    attention_dim: int       # 注意力维度
     output_dropout_ratio: float = 0.3
-    causal: bool = True
-    target_aware: bool = True
+    causal: bool = True # 启用因果注意力，防止未来信息泄露
+    target_aware: bool = True # 在计算用户表示时考虑候选目标
     max_attn_len: Optional[int] = None
     attn_alpha: Optional[float] = None
     use_group_norm: bool = False
@@ -79,7 +79,10 @@ class STULayerConfig:
     sort_by_length: bool = True
     contextual_seq_len: int = 0
 
-
+# 缓存机制优势：
+# 推理加速：避免重复计算历史K、V
+# 内存高效：只存储必要的缓存部分
+# 动态长度：支持变长序列的缓存
 @torch.fx.wrap
 def _update_kv_cache(
     max_seq_len: int,
@@ -94,17 +97,26 @@ def _update_kv_cache(
     orig_kv_caching_offsets: Optional[torch.Tensor],
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], int, Optional[torch.Tensor]]:
     if kv_caching_lengths is not None:
+        # 计算缓存偏移, [10, 15, 8] -> [0, 10, 25, 33]
         kv_caching_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
             kv_caching_lengths
         )
+        # 用户1历史: [item1, item2, item3, item4, item5] -> 新增 [item6]
+        # 用户2历史: [itemA, itemB] -> 新增 [itemC, itemD] 
+        # 用户3历史: [itemX] -> 新增 [itemY]
+        # seq_offsets = [0, 6, 10, 12]      # 当前完整序列的边界  
+        # kv_caching_lengths = [0, 5, 7, 8]    # 已缓存的长度
+        # delta_offsets = [0, 1, 3, 4]
+        # max_seq_len = 6                   # 当前批次的最大序列长度
         delta_offsets = seq_offsets - kv_caching_offsets
+        # 分割K、V缓存
         k_cache, _ = split_2D_jagged(
             max_seq_len=max_seq_len,
             values=fx_unwrap_optional_tensor(k).flatten(1, 2),
             max_len_left=None,
             max_len_right=None,
-            offsets_left=kv_caching_offsets,
-            offsets_right=delta_offsets,
+            offsets_left=kv_caching_offsets,    # 缓存部分的边界
+            offsets_right=delta_offsets,        # 新增部分的边界
         )
         v_cache, _ = split_2D_jagged(
             max_seq_len=max_seq_len,
@@ -140,18 +152,20 @@ def _construct_full_kv(
     max_kv_caching_len: int,
     kv_caching_offsets: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]:
-    L, _ = delta_k.shape
-    B = kv_caching_offsets.shape[0] - 1
-    delta_size = L // B
+    L, _ = delta_k.shape    # L = 40
+    B = kv_caching_offsets.shape[0] - 1 # B = 2 (两个用户)
+    delta_size = L // B  # delta_size = 40 // 2 = 20 (每个用户20个新增)
+    # 连接缓存的K、V和新的delta K、V
     full_k = concat_2D_jagged(
-        max_seq_len=max_kv_caching_len + delta_size,
-        values_left=k_cache,
-        values_right=delta_k,
-        max_len_left=max_kv_caching_len,
-        max_len_right=delta_size,
-        offsets_left=kv_caching_offsets,
+        max_seq_len=max_kv_caching_len + delta_size,    # 24 + 20 = 44
+        values_left=k_cache,                            # [43, D] 历史缓存
+        values_right=delta_k,                           # [40, D] 新增部分
+        max_len_left=max_kv_caching_len,                # 24
+        max_len_right=delta_size,                       # 20
+        offsets_left=kv_caching_offsets,                # [0, 19, 43]
         offsets_right=None,
     )
+    # 同样处理V
     full_v = concat_2D_jagged(
         max_seq_len=max_kv_caching_len + delta_size,
         values_left=v_cache,
@@ -163,7 +177,7 @@ def _construct_full_kv(
     )
     full_kv_caching_offsets = kv_caching_offsets + delta_size * torch.arange(
         B + 1, device=delta_k.device
-    )
+    )   # [0, 19, 43] + 20 * [0, 1, 2] = [0, 19, 43] + [0, 20, 40] = [0, 39, 83]
     return (
         full_k,
         full_v,
@@ -186,6 +200,7 @@ class STULayer(STU):
         super().__init__(
             is_inference=is_inference,
         )
+        # 重置KV缓存
         self.reset_kv_cache()
         self._num_heads: int = config.num_heads
         self._embedding_dim: int = config.embedding_dim
@@ -202,7 +217,8 @@ class STULayer(STU):
         self._recompute_y: bool = config.recompute_y
         self._sort_by_length: bool = config.sort_by_length
         self._contextual_seq_len: int = config.contextual_seq_len
-
+        
+        # 核心参数矩阵
         self._uvqk_weight: torch.nn.Parameter = torch.nn.Parameter(
             torch.empty(
                 (
@@ -217,12 +233,14 @@ class STULayer(STU):
                 (self._hidden_dim * 2 + self._attention_dim * 2) * self._num_heads,
             ),
         )
+         # 层归一化参数
         self._input_norm_weight: torch.nn.Parameter = torch.nn.Parameter(
             torch.ones((self._embedding_dim,)),
         )
         self._input_norm_bias: torch.nn.Parameter = torch.nn.Parameter(
             torch.zeros((self._embedding_dim,)),
         )
+        # 输出投影矩阵
         self._output_weight = torch.nn.Parameter(
             torch.empty(
                 (
@@ -252,12 +270,12 @@ class STULayer(STU):
 
     def update_kv_cache(
         self,
-        max_seq_len: int,
-        seq_offsets: torch.Tensor,
-        k: Optional[torch.Tensor],
-        v: Optional[torch.Tensor],
-        max_kv_caching_len: int,
-        kv_caching_lengths: Optional[torch.Tensor],
+        max_seq_len: int,                # 当前序列的最大长度
+        seq_offsets: torch.Tensor,       # 序列偏移量（批次边界）
+        k: Optional[torch.Tensor],       # 新计算的Key张量
+        v: Optional[torch.Tensor],       # 新计算的Value张量
+        max_kv_caching_len: int,         # 最大缓存长度
+        kv_caching_lengths: Optional[torch.Tensor],  # 各序列的缓存长度
     ) -> None:
         self.k_cache, self.v_cache, self.max_kv_caching_len, self.kv_caching_offsets = (
             _update_kv_cache(
@@ -298,6 +316,7 @@ class STULayer(STU):
         max_kv_caching_len: int = 0,
         kv_caching_lengths: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        # 第一阶段：预处理和注意力计算
         with record_function("## stu_preprocess_and_attention ##"):
             u, attn_output, k, v = hstu_preprocess_and_attention(
                 x=x,
@@ -309,6 +328,7 @@ class STULayer(STU):
                 hidden_dim=self._hidden_dim,
                 uvqk_weight=self._uvqk_weight.to(x.dtype),
                 uvqk_bias=self._uvqk_beta.to(x.dtype),
+                # 注意力配置
                 max_seq_len=max_seq_len,
                 seq_offsets=x_offsets,
                 attn_alpha=self._attn_alpha,
@@ -322,7 +342,7 @@ class STULayer(STU):
                 prefill=kv_caching_lengths is not None,
                 kernel=self.hammer_kernel(),
             )
-
+        # 更新KV缓存
         self.update_kv_cache(
             max_seq_len=max_seq_len,
             seq_offsets=x_offsets,
@@ -331,17 +351,19 @@ class STULayer(STU):
             max_kv_caching_len=max_kv_caching_len,
             kv_caching_lengths=kv_caching_lengths,
         )
-
+        # 第二阶段：输出计算
         with record_function("## stu_compute_output ##"):
             return hstu_compute_output(
                 attn=attn_output,
                 u=u,
                 x=x,
+                # 归一化和输出投影参数
                 norm_weight=self._output_norm_weight.to(x.dtype),
                 norm_bias=self._output_norm_bias.to(x.dtype),
                 norm_eps=1e-6,
                 dropout_ratio=self._output_dropout_ratio,
                 output_weight=self._output_weight.to(x.dtype),
+                # 配置选项
                 group_norm=self._use_group_norm,
                 num_heads=self._num_heads,
                 linear_dim=self._hidden_dim,
@@ -350,7 +372,10 @@ class STULayer(STU):
                 kernel=self.hammer_kernel(),
                 recompute_y_in_backward=self._recompute_y,
             )
-
+    # 缓存前向传播（推理优化）
+    # 增量计算：只计算新增token的Q，复用历史K、V
+    # 高效注意力：delta_hstu_mha专门处理增量场景
+    # 内存节省：避免重复存储和计算
     def cached_forward(
         self,
         delta_x: torch.Tensor,
@@ -358,6 +383,9 @@ class STULayer(STU):
         max_kv_caching_len: int = 0,
         kv_caching_lengths: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        # 计算增量的U、Q、K、V。比如
+        # delta_k: [40, num_heads, attn_dim] - 新增token的K值
+        # delta_v: [40, num_heads, hidden_dim] - 新增token的V值
         with record_function("## stu_compute_uqvk ##"):
             delta_u, delta_q, delta_k, delta_v = hstu_compute_uqvk(
                 x=delta_x,
@@ -371,10 +399,19 @@ class STULayer(STU):
                 uvqk_bias=self._uvqk_beta.to(delta_x.dtype),
                 kernel=self.hammer_kernel(),
             )
+        # 构建完整的K、V（缓存+新增）
+        # 缓存部分：
+        # k_cache = [43, num_heads*attn_dim]  # 用户1的19个 + 用户2的24个
+        # kv_caching_offsets = [0, 19, 43]   # 缓存边界
+        # max_kv_caching_len = 24             # 最大缓存长度（用户2）
         k, v, max_seq_len, seq_offsets = self.construct_full_kv(
-            delta_k=delta_k.flatten(1, 2),
-            delta_v=delta_v.flatten(1, 2),
+            delta_k=delta_k.flatten(1, 2),  # [40, num_heads*attn_dim]
+            delta_v=delta_v.flatten(1, 2),  # [40, num_heads*hidden_dim]
         )
+        # 结果：full_k包含完整的K值 [83, num_heads*attn_dim]
+        # 用户1: 19个缓存 + 20个新增 = 39个K值
+        # 用户2: 24个缓存 + 20个新增 = 44个K值
+        
         self.update_kv_cache(
             max_seq_len=max_seq_len,
             seq_offsets=seq_offsets,
@@ -385,13 +422,15 @@ class STULayer(STU):
         )
         k = k.view(-1, self._num_heads, self._attention_dim)
         v = v.view(-1, self._num_heads, self._hidden_dim)
+        
+        # 增量注意力计算
         with record_function("## delta_hstu_mha ##"):
             delta_attn_output = delta_hstu_mha(
                 max_seq_len=max_seq_len,
                 alpha=self._attn_alpha,
-                delta_q=delta_q,
-                k=k,
-                v=v,
+                delta_q=delta_q,    # 只有查询是新的
+                k=k,                # K包含历史+新增
+                v=v,                # V包含历史+新增
                 seq_offsets=seq_offsets,
                 num_targets=num_targets if self._target_aware else None,
                 max_attn_len=self._max_attn_len,
