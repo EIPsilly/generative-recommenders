@@ -129,13 +129,28 @@ class RelativeBucketedTimeAndPositionBasedBias(RelativeAttentionBiasModule):
         r = (2 * N - 1) // 2 # -> N - 1
 
         # [B, N + 1] to simplify tensor manipulations.
+        # [10, 12, 15],  # 用户1：10点、12点、15点
+        # [20, 21, 25]   # 用户2：20点、21点、25点
         ext_timestamps = torch.cat(
             [all_timestamps, all_timestamps[:, N - 1 : N]], dim=1
         )
+        # 结果：
+        # [[10, 12, 15, 15],
+        #  [20, 21, 25, 25]]  # shape: [2, 4]
+        
         # causal masking. Otherwise [:, :-1] - [:, 1:] works
+        # 计算时间差 $\delta_{i,j} = t_{i+1} - t_{j}$
+        # [12, 15, 15] -> unsqueeze(2) -> shape: [1, 3, 1]
+        # [10, 12, 15] -> unsqueeze(1) -> shape: [1, 1, 3]
+        # 广播相减得到时间差矩阵：
+        #     [12]     [10, 12, 15]     [2, 0, -3]
+        #     [15]  -                =  [5, 3,  0]  
+        #     [15]                      [5, 3,  0]
+        # 然后进行分桶操作，并且限制最大最小范围
+        # 最后 shape 为[B, N, N]，
         bucketed_timestamps = torch.clamp(
             self._bucketization_fn(
-                ext_timestamps[:, 1:].unsqueeze(2) - ext_timestamps[:, :-1].unsqueeze(1) # 计算时间差 [B, N, N]，$\delta_{i,j} = t_{i+1} - t_{j}$
+                ext_timestamps[:, 1:].unsqueeze(2) - ext_timestamps[:, :-1].unsqueeze(1)
             ),
             min=0,
             max=self._num_buckets,
@@ -423,9 +438,9 @@ class SequentialTransductionUnitJagged(torch.nn.Module):
             a = self._norm_attn_output(attn_output)
             o_input = torch.cat([u, a, u * a], dim=-1)
         else:
-            o_input = u * self._norm_attn_output(attn_output)
+            o_input = u * self._norm_attn_output(attn_output)   # 对注意力输出进行 layer norm 后，与U相乘
 
-        new_outputs = (
+        new_outputs = ( # 经过一层线性层输出，对应公式3中的 f_2
             self._o(
                 F.dropout(
                     o_input,

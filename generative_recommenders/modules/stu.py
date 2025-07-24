@@ -154,7 +154,10 @@ def _construct_full_kv(
 ) -> Tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]:
     L, _ = delta_k.shape    # L = 40
     B = kv_caching_offsets.shape[0] - 1 # B = 2 (两个用户)
+    
+    # 这个计算隐含假设了：每个用户增加的token数量完全相同。
     delta_size = L // B  # delta_size = 40 // 2 = 20 (每个用户20个新增)
+    
     # 连接缓存的K、V和新的delta K、V
     full_k = concat_2D_jagged(
         max_seq_len=max_kv_caching_len + delta_size,    # 24 + 20 = 44

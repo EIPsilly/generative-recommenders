@@ -55,7 +55,7 @@ def _concat_2D_jagged_jagged(
     mask = fx_arange(max_seq_len, device=offsets_left.device).view(1, -1)
     mask = torch.logical_or(
         mask < lengths_left.view(-1, 1), # 左侧有效掩码，0-18个有效，0-23个有效
-        torch.logical_and(  # 右侧有效掩码，用户1: 19-38位置有效，用户2: 24-43位置有效
+        torch.logical_and(  # 右侧有效掩码，用户1: 24-43位置有效，无效位置 [19-23] = 5个padding位置被正确排除；用户2: 24-43位置有效。
             mask >= max_len_left,   
             mask < max_len_left + lengths_right.view(-1, 1),  
         ),

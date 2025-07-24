@@ -117,6 +117,7 @@ def eval_metrics_v2_from_tensors(
 
     MAX_K = 2500
     k = min(MAX_K, eval_state.candidate_index.ids.size(1))
+    # 分批次计算距离每一批embedding最近的k个候选物品
     user_max_batch_size = user_max_batch_size or shared_input_embeddings.size(0)
     num_batches = (
         shared_input_embeddings.size(0) + user_max_batch_size - 1
