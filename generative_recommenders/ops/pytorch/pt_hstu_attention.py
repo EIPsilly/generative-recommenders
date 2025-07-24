@@ -44,7 +44,7 @@ def _get_valid_attn_mask(
     max_ids = seq_lengths.view(-1, 1, 1)                # [B, 1, 1]: 每个序列的实际长度
     # 序列结构: [上下文特征] + [用户历史] + [候选物品]
     # 长度:     [contextual] + [user_history] + [candidates]
-    # contextual_seq_len = 5 表示前5个位置是上下文
+    # contextual_seq_len = 2 表示前2个位置是上下文
     # 调整后的ids让用户历史从位置0开始计算
     if contextual_seq_len > 0:
         ids = ids - contextual_seq_len + 1     # 调整位置索引
@@ -73,7 +73,7 @@ def _get_valid_attn_mask(
     if max_attn_len > 0:
         if min_full_attn_seq_len > 0:
             # 复杂策略：长序列全注意力，短序列限制注意力。序列末尾的物品（最近交互）对推荐更重要，候选物品可以访问完整的用户历史
-            # 序列前段控制复杂度，序列末段确保质量
+            # 序列前段mask部分控制复杂度，序列末段不mask确保质量
             valid_attn_mask = torch.logical_and(
                 valid_attn_mask,
                 torch.logical_or(
@@ -197,8 +197,8 @@ def pytorch_cached_hstu_mha(
     _, _, V = v.shape
     B = seq_offsets.size(0) - 1
     delta_size = L // B
-    delta_q = delta_q.view(B, -1, H, D).transpose(1, 2)
-    full_k = (
+    delta_q = delta_q.view(B, -1, H, D).transpose(1, 2) # [L, H, D] -> [B, L, H, D] -> [B, H, L, D]
+    full_k = (  # K: [N, H, D] -> [B, max_seq_len, H, D] -> [B, H, max_seq_len, D]
         torch.ops.fbgemm.jagged_to_padded_dense(
             values=k.reshape(-1, H * D),
             offsets=[seq_offsets],
@@ -218,7 +218,7 @@ def pytorch_cached_hstu_mha(
         .view(B, -1, H, V)
         .transpose(1, 2)
     )
-    qk_attn = torch.einsum("bhxa,bhya->bhxy", delta_q, full_k) * alpha
+    qk_attn = torch.einsum("bhxa,bhya->bhxy", delta_q, full_k) * alpha  #[B, H, delta_size, D] × [B, H, max_seq_len, D] -> [B, H, delta_size, max_seq_len]
     qk_attn = F.silu(qk_attn) / max_seq_len
     full_valid_attn_mask = _get_valid_attn_mask(
         device=delta_q.device,
@@ -231,14 +231,15 @@ def pytorch_cached_hstu_mha(
     )
     seq_lengths = seq_offsets[1:] - seq_offsets[:-1]
     mask = torch.arange(max_seq_len, device=delta_q.device).view(1, -1)
+    # 生成掩码，只关注新增token的有效注意力范围。最终掩码 [B, max_seq_len]，用户1: [19-38]有效，用户2: [24-43]有效
     mask = torch.logical_and(
-        mask >= (seq_lengths - delta_size).view(-1, 1),
-        mask < seq_lengths.view(-1, 1),
+        mask >= (seq_lengths - delta_size).view(-1, 1), # 从新增token开始位置
+        mask < seq_lengths.view(-1, 1), # 到当前序列结束位置
     )
     valid_attn_mask = (
-        full_valid_attn_mask.expand(B, -1, -1)
-        .flatten(0, 1)[mask.view(-1), :]
-        .view(-1, delta_size, max_seq_len)
+        full_valid_attn_mask.expand(B, -1, -1) # [max_seq_len, max_seq_len] -> [B, max_seq_len, max_seq_len] -> [B*max_seq_len, max_seq_len]
+        .flatten(0, 1)[mask.view(-1), :]    # 只保留新增token行
+        .view(-1, delta_size, max_seq_len)  # [B, delta, max_seq_len]
     )
     qk_attn = qk_attn * valid_attn_mask.unsqueeze(1)
     attn_output = torch.einsum("bhxd,bhdv->bhxv", qk_attn, full_v)

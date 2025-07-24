@@ -211,9 +211,10 @@ class ContextualPreprocessor(InputPreprocessor):
     ]:
         output_seq_embeddings = self._content_embedding_mlp(seq_embeddings)
         max_seq_len = max_uih_len + max_targets
-        target_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(num_targets)
-        seq_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(seq_lengths)
-        uih_offsets = seq_offsets - target_offsets
+        target_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(num_targets) # 累积候选偏移
+        seq_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(seq_lengths) # 累积序列偏移
+        uih_offsets = seq_offsets - target_offsets  # 用户历史偏移量
+        # 如果配置了动作权重，会额外处理用户行为的嵌入表示。
         if self._action_weights is not None:
             action_embeddings = self._action_encoder(
                 max_uih_len=max_uih_len,
@@ -238,6 +239,7 @@ class ContextualPreprocessor(InputPreprocessor):
         )
         # concat contextual embeddings
         if self._max_contextual_seq_len > 0:
+            # 获取上下文特征嵌入
             contextual_input_embeddings = get_contextual_input_embeddings(
                 seq_lengths=seq_lengths,
                 seq_payloads=seq_payloads,
@@ -245,6 +247,7 @@ class ContextualPreprocessor(InputPreprocessor):
                 contextual_feature_to_min_uih_length=self._contextual_feature_to_min_uih_length,
                 dtype=seq_embeddings.dtype,
             )
+            # 线性层
             contextual_embeddings = torch.baddbmm(
                 self._batched_contextual_linear_bias.view(
                     -1, 1, self._output_embedding_dim
@@ -256,6 +259,7 @@ class ContextualPreprocessor(InputPreprocessor):
                     contextual_input_embeddings.dtype
                 ),
             ).transpose(0, 1)
+             # 拼接到序列前面
             output_seq_embeddings = concat_2D_jagged(
                 max_seq_len=self._max_contextual_seq_len + output_max_seq_len,
                 values_left=fx_unwrap_optional_tensor(contextual_embeddings).reshape(

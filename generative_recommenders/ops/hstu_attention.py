@@ -147,7 +147,7 @@ def delta_hstu_mha(
     if not is_fx_tracing():
         torch._assert(max_seq_len > 0, "max_seq_len must be larger than 0")
         torch._assert(delta_q.dim() == 3, "delta_q must be 3-D")
-        torch._assert(L % B == 0, "delta_q must be padded")
+        torch._assert(L % B == 0, "delta_q must be padded") # 每个用户增加的token数量完全相同
         torch._assert(k.dim() == 3, "k must be 3-D")
         torch._assert(k.shape[1] == H, "wrong k shape[1]")
         torch._assert(k.shape[2] == D, "wrong k shape[2]")

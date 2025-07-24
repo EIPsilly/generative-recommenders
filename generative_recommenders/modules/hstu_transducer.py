@@ -66,8 +66,8 @@ class HSTUTransducer(HammerModule):
     ) -> None:
         super().__init__(is_inference=is_inference)
         self._stu_module = stu_module
-        self._input_preprocessor: InputPreprocessor = input_preprocessor
-        self._output_postprocessor: OutputPostprocessor = (
+        self._input_preprocessor: InputPreprocessor = input_preprocessor    # DlrmHSTU 中声明的 ContextualPreprocessor
+        self._output_postprocessor: OutputPostprocessor = (                 # 输出层，用于归一化 L2NormPostprocessor 也可以用 DlrmHSTU 中声明的 LayerNormPostprocessor 或者 TimestampLayerNormPostprocessor
             output_postprocessor
             if output_postprocessor is not None
             else L2NormPostprocessor(is_inference=is_inference)
@@ -75,7 +75,7 @@ class HSTUTransducer(HammerModule):
         assert (
             self._is_inference == self._input_preprocessor._is_inference
         ), f"input_preprocessor must have the same mode; self: {self._is_inference} vs input_preprocessor {self._input_preprocessor._is_inference}"
-        self._positional_encoder: Optional[HSTUPositionalEncoder] = positional_encoder
+        self._positional_encoder: Optional[HSTUPositionalEncoder] = positional_encoder  # DlrmHSTU 中声明的 HSTUPositionalEncoder
         self._input_dropout_ratio: float = input_dropout_ratio
         self._return_full_embeddings: bool = return_full_embeddings
         self._listwise_training: bool = listwise and self.is_train
@@ -126,7 +126,7 @@ class HSTUTransducer(HammerModule):
                 output_seq_embeddings,
                 output_num_targets,
                 output_seq_payloads,
-            ) = self._input_preprocessor(
+            ) = self._input_preprocessor(   # 包含 
                 max_uih_len=max_uih_len,
                 max_targets=max_targets,
                 total_uih_len=total_uih_len,

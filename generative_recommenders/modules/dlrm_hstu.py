@@ -235,7 +235,7 @@ class DlrmHSTU(HammerModule):
             listwise=False,
         )
 
-        # item embeddings
+        # item embeddings 一层512 dense+layer_norm+silu+一层512 dense+layer_norm。
         self._item_embedding_mlp: torch.nn.Module = torch.nn.Sequential(
             torch.nn.Linear(
                 in_features=hstu_configs.hstu_embedding_table_dim
@@ -288,19 +288,21 @@ class DlrmHSTU(HammerModule):
         payload_features: Dict[str, torch.Tensor],
         num_candidates: torch.Tensor,
     ) -> torch.Tensor:
+        # 获取用户历史交互的序列长度
         source_lengths = seq_embeddings[
             self._hstu_configs.uih_post_id_feature_name
         ].lengths
+        # 将用户历史交互时间戳与候选物品查询时间戳合并
         source_timestamps = concat_2D_jagged(
-            max_seq_len=max_uih_len + max_candidates,
-            max_len_left=max_uih_len,
-            offsets_left=payload_features["uih_offsets"],
-            values_left=payload_features[
+            max_seq_len=max_uih_len + max_candidates,               # 合并后的最大序列长度
+            max_len_left=max_uih_len,                               # 用户历史最大长度
+            offsets_left=payload_features["uih_offsets"],           # 用户历史序列边界
+            values_left=payload_features[                           # 用户历史时间戳
                 self._hstu_configs.uih_action_time_feature_name
             ].unsqueeze(-1),
-            max_len_right=max_candidates,
-            offsets_right=payload_features["candidate_offsets"],
-            values_right=payload_features[
+            max_len_right=max_candidates,                           # 候选物品最大长度
+            offsets_right=payload_features["candidate_offsets"],    # 候选物品序列边界
+            values_right=payload_features[                          # 候选物品时间戳
                 self._hstu_configs.candidates_querytime_feature_name
             ].unsqueeze(-1),
             kernel=self.hammer_kernel(),
@@ -354,6 +356,7 @@ class DlrmHSTU(HammerModule):
         torch.Tensor,
     ]:
         # embedding lookup for uih and candidates
+        # 将用户历史和候选物品特征合并为单一张量，便于批量嵌入查找
         merged_sparse_features = KeyedJaggedTensor.from_lengths_sync(
             keys=uih_features.keys() + candidates_features.keys(),
             values=torch.cat(
@@ -365,11 +368,14 @@ class DlrmHSTU(HammerModule):
                 dim=0,
             ),
         )
+        # 作用：通过嵌入表将稀疏ID转换为密集向量表示，并返回一个字典，key为特征名，value为嵌入向量
         seq_embeddings_dict = self._embedding_collection(merged_sparse_features)
+        # 计算候选物品数量，并获取最大长度
         num_candidates = fx_mark_length_features(
             candidates_features.lengths().view(len(candidates_features.keys()), -1)
         )[0]
         max_num_candidates = fx_infer_max_len(num_candidates)
+        # 获取用户历史交互的序列长度
         uih_seq_lengths = uih_features[
             self._hstu_configs.uih_post_id_feature_name
         ].lengths()
@@ -381,6 +387,7 @@ class DlrmHSTU(HammerModule):
             uih_feature_name,
             candidate_feature_name,
         ) in self._hstu_configs.merge_uih_candidate_feature_mapping:
+            # 处理非嵌入特征（如时间戳、权重等）
             if (
                 candidate_feature_name
                 not in self._hstu_configs.item_embedding_feature_names
@@ -394,6 +401,7 @@ class DlrmHSTU(HammerModule):
                     or candidate_feature_name
                     == self._hstu_configs.candidates_watchtime_feature_name
                 ):
+                    # 推理时创建零张量作为占位符
                     total_candidates = torch.sum(num_candidates).item()
                     values_right = torch.zeros(
                         total_candidates,  # pyre-ignore
@@ -404,13 +412,15 @@ class DlrmHSTU(HammerModule):
                     values_right = candidates_features[candidate_feature_name].values()
                 payload_features[uih_feature_name] = values_left
                 payload_features[candidate_feature_name] = values_right
+        
+        # 计算序列边界，用于jagged tensor操作
         payload_features["uih_offsets"] = torch.ops.fbgemm.asynchronous_complete_cumsum(
             uih_seq_lengths
         )
         payload_features["candidate_offsets"] = (
             torch.ops.fbgemm.asynchronous_complete_cumsum(num_candidates)
         )
-
+        # 将嵌入查找结果包装为SequenceEmbedding对象
         seq_embeddings = {
             k: SequenceEmbedding(
                 lengths=seq_embeddings_dict[k].lengths(),
@@ -451,6 +461,7 @@ class DlrmHSTU(HammerModule):
             candidate_feature_name,
         ) in self._hstu_configs.merge_uih_candidate_feature_mapping:
             if uih_feature_name in seq_embeddings:
+                # 合并用户历史交互(UIH)和候选物品嵌入
                 seq_embeddings[uih_feature_name] = SequenceEmbedding(
                     lengths=uih_seq_lengths + num_candidates,
                     embedding=concat_2D_jagged(
@@ -468,11 +479,12 @@ class DlrmHSTU(HammerModule):
                         kernel=self.hammer_kernel(),
                     ),
                 )
-
+        # 提取所有物品（历史+候选）的嵌入表示 [L, D]
         with record_function("## item_forward ##"):
             candidates_item_embeddings = self._item_forward(
                 seq_embeddings,
             )
+        # 基于用户历史交互和候选物品，使用HSTU模型来捕获序列中的时序依赖关系，生成用户嵌入
         with record_function("## user_forward ##"):
             candidates_user_embeddings = self._user_forward(
                 max_uih_len=max_uih_len,
@@ -508,12 +520,12 @@ class DlrmHSTU(HammerModule):
                 aux_losses[task.task_name] = mt_losses[i]
 
         return (
-            candidates_user_embeddings,
-            candidates_item_embeddings,
-            aux_losses,
-            mt_target_preds,
-            mt_target_labels,
-            mt_target_weights,
+            candidates_user_embeddings,   # 用户在候选上下文中的表示
+            candidates_item_embeddings,   # 候选物品的表示
+            aux_losses,                   # 各任务的损失
+            mt_target_preds,             # 多任务预测结果
+            mt_target_labels,            # 真实标签
+            mt_target_weights,           # 样本权重
         )
 
     def forward(
