@@ -206,13 +206,13 @@ class HSTUTransducer(HammerModule):
                     seq_timestamps=seq_timestamps,
                     seq_payloads=seq_payloads,
                 )
-            uih_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            uih_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(    # 用户历史序列的偏移量
                 seq_lengths - num_targets
             )
-            candidates_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            candidates_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(    # 候选物品序列的偏移量
                 num_targets
             )
-            _, candidate_embeddings = split_2D_jagged(
+            _, candidate_embeddings = split_2D_jagged(    # 将序列嵌入拆分为用户历史和候选物品两部分
                 values=seq_embeddings,
                 max_seq_len=max_seq_len,
                 total_len_left=total_uih_len,
@@ -227,6 +227,7 @@ class HSTUTransducer(HammerModule):
                     -1, 2, candidate_embeddings.size(-1)
                 )[:, 0, :]
             if not self._return_full_embeddings:
+                # 分离候选物品的时间戳
                 _, candidate_timestamps = split_2D_jagged(
                     values=seq_timestamps.unsqueeze(-1),
                     max_seq_len=max_seq_len,
@@ -239,6 +240,7 @@ class HSTUTransducer(HammerModule):
                 candidate_timestamps = candidate_timestamps.squeeze(-1)
                 if interleave_targets:
                     candidate_timestamps = candidate_timestamps.view(-1, 2)[:, 0]
+                # 对候选物品单独进行后处理
                 candidate_embeddings = self._output_postprocessor(
                     seq_embeddings=candidate_embeddings,
                     seq_timestamps=candidate_timestamps,

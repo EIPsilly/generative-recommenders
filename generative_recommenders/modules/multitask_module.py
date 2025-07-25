@@ -66,7 +66,7 @@ class MultitaskModule(HammerModule):
         """
         pass
 
-
+# 用户嵌入 和 物品嵌入 逐元素相乘，然后通过mlp，得到多任务的logits
 def _compute_pred_and_logits(
     prediction_module: torch.nn.Module,
     encoded_user_embeddings: torch.Tensor,
@@ -81,6 +81,7 @@ def _compute_pred_and_logits(
     for task_type in MultitaskTaskType:
         if task_offsets[task_type + 1] - task_offsets[task_type] > 0:
             if task_type == MultitaskTaskType.REGRESSION:
+                # 回归任务：直接输出logits
                 mt_preds_list.append(
                     mt_logits[
                         task_offsets[task_type] : task_offsets[task_type + 1],
@@ -88,6 +89,7 @@ def _compute_pred_and_logits(
                     ]
                 )
             else:
+                # 分类任务：应用sigmoid激活
                 mt_preds_list.append(
                     F.sigmoid(
                         mt_logits[
@@ -103,7 +105,7 @@ def _compute_pred_and_logits(
 
     return mt_preds, mt_logits
 
-
+# 将字典格式的标签转换为张量格式
 def _compute_labels_and_weights(
     supervision_labels: Dict[str, torch.Tensor],
     supervision_weights: Dict[str, torch.Tensor],
@@ -185,6 +187,7 @@ def _compute_loss(
         mt_losses = torch.concat(mt_losses_list, dim=0)
     else:
         mt_losses = mt_losses_list[0]
+    # 加权平均
     mt_losses = (
         mt_losses.sum(-1) / mt_weights.sum(-1).clamp(min=1.0) * causal_multitask_weights
     )
@@ -209,11 +212,14 @@ class DefaultMultitaskModule(MultitaskModule):
         self._task_offsets: List[int] = [0] * (len(MultitaskTaskType) + 1)
         for task in self._task_configs:
             self._task_offsets[task.task_type + 1] += 1
+        # 结果：_task_offsets = [0, 3, 1]  # [起始, 3个分类任务, 1个回归任务]
         self._has_multiple_task_types: bool = self._task_offsets.count(0) < len(
             MultitaskTaskType
         )
+        # 步骤2：计算累积偏移
+        # 最终：_task_offsets = [0, 3, 4]
         self._task_offsets[1:] = np.cumsum(self._task_offsets[1:]).tolist()
-        self._causal_multitask_weights: float = causal_multitask_weights
+        self._causal_multitask_weights: float = causal_multitask_weights    # 0.2
         self._prediction_module: torch.nn.Module = prediction_fn(
             embedding_dim, len(task_configs)
         )
@@ -263,7 +269,7 @@ class DefaultMultitaskModule(MultitaskModule):
                 task_offsets=self._task_offsets,
                 causal_multitask_weights=self._causal_multitask_weights,
                 mt_logits=mt_logits.to(mt_labels.dtype),
-                mt_labels=mt_labels,
+                mt_labels=mt_labels,s
                 mt_weights=mt_weights,
                 has_multiple_task_types=self._has_multiple_task_types,
             )

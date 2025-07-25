@@ -36,13 +36,13 @@ class HSTUPositionalEncoder(HammerModule):
         super().__init__(is_inference=is_inference)
         self._embedding_dim: int = embedding_dim
         self._contextual_seq_len: int = contextual_seq_len
-        self._position_embeddings_weight: torch.nn.Parameter = torch.nn.Parameter(
+        self._position_embeddings_weight: torch.nn.Parameter = torch.nn.Parameter(  # 位置嵌入权重 [8192, 512]
             torch.empty(num_position_buckets, embedding_dim).uniform_(
                 -sqrt(1.0 / num_position_buckets),
                 sqrt(1.0 / num_position_buckets),
             ),
         )
-        self._timestamp_embeddings_weight: torch.nn.Parameter = torch.nn.Parameter(
+        self._timestamp_embeddings_weight: torch.nn.Parameter = torch.nn.Parameter(  # 时间戳嵌入权重 [2049, 512]
             torch.empty(num_time_buckets + 1, embedding_dim).uniform_(
                 -sqrt(1.0 / num_time_buckets),
                 sqrt(1.0 / num_time_buckets),

@@ -82,8 +82,8 @@ class InputPreprocessor(HammerModule):
 def get_contextual_input_embeddings(
     seq_lengths: torch.Tensor,
     seq_payloads: Dict[str, torch.Tensor],
-    contextual_feature_to_max_length: Dict[str, int],
-    contextual_feature_to_min_uih_length: Dict[str, int],
+    contextual_feature_to_max_length: Dict[str, int],   # { "user_id": 1, "sex": 1, "age_group": 1, "occupation": 1, "zip_code": 1, }
+    contextual_feature_to_min_uih_length: Dict[str, int],   # { "user_id": 20, "sex": 20, "age_group": 20, "occupation": 20, "zip_code": 20, }
     dtype: torch.dtype,
 ) -> torch.Tensor:
     padded_values: List[torch.Tensor] = []
@@ -119,16 +119,16 @@ class ContextualPreprocessor(InputPreprocessor):
         is_inference: bool = True,
     ) -> None:
         super().__init__(is_inference=is_inference)
-        self._output_embedding_dim: int = output_embedding_dim
-        self._input_embedding_dim: int = input_embedding_dim
-        self._hidden_dim: int = hidden_dim
-        self._contextual_feature_to_max_length: Dict[str, int] = (
+        self._output_embedding_dim: int = output_embedding_dim # 512
+        self._input_embedding_dim: int = input_embedding_dim # 256
+        self._hidden_dim: int = hidden_dim # 256
+        self._contextual_feature_to_max_length: Dict[str, int] = (  #{ "user_id": 1, "sex": 1, "age_group": 1, "occupation": 1, "zip_code": 1, }
             contextual_feature_to_max_length
         )
-        self._max_contextual_seq_len: int = sum(
+        self._max_contextual_seq_len: int = sum(    # 5
             contextual_feature_to_max_length.values()
         )
-        self._contextual_feature_to_min_uih_length: Dict[str, int] = (
+        self._contextual_feature_to_min_uih_length: Dict[str, int] = (  # { "user_id": 20, "sex": 20, "age_group": 20, "occupation": 20, "zip_code": 20, }
             contextual_feature_to_min_uih_length
         )
         if self._max_contextual_seq_len > 0:
@@ -167,12 +167,12 @@ class ContextualPreprocessor(InputPreprocessor):
         ).apply(init_mlp_weights_optional_bias)
         self._action_feature_name: str = action_feature_name
         self._action_weights: Optional[List[int]] = action_weights
-        if self._action_weights is not None:
+        if self._action_weights is not None:    # KuaiRand 数据集（唯一有 ActionEncoder 的数据集），才会创建 ActionEncoder
             self._action_encoder: ActionEncoder = ActionEncoder(
-                action_feature_name=action_feature_name,
-                action_weights=self._action_weights,
-                action_embedding_dim=action_embedding_dim,
-                is_inference=is_inference,
+                action_feature_name=action_feature_name,    # "action_weight"
+                action_weights=self._action_weights,    # [1, 2, 4, 8, 16, 32, 64, 128]
+                action_embedding_dim=action_embedding_dim, # 8
+                is_inference=is_inference, 
             )
             self._action_embedding_mlp: torch.nn.Module = torch.nn.Sequential(
                 torch.nn.Linear(
@@ -209,6 +209,7 @@ class ContextualPreprocessor(InputPreprocessor):
         torch.Tensor,
         Dict[str, torch.Tensor],
     ]:
+        # 获得内容嵌入 一层512 dense+layer_norm+silu+一层512 dense+layer_norm。
         output_seq_embeddings = self._content_embedding_mlp(seq_embeddings)
         max_seq_len = max_uih_len + max_targets
         target_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(num_targets) # 累积候选偏移
@@ -240,11 +241,12 @@ class ContextualPreprocessor(InputPreprocessor):
         # concat contextual embeddings
         if self._max_contextual_seq_len > 0:
             # 获取上下文特征嵌入
+            # 将各个context类特征（movielens中是 user_id、sex、age_group、occupation、zip_code）拼接为contextual_input_embeddings
             contextual_input_embeddings = get_contextual_input_embeddings(
                 seq_lengths=seq_lengths,
                 seq_payloads=seq_payloads,
-                contextual_feature_to_max_length=self._contextual_feature_to_max_length,
-                contextual_feature_to_min_uih_length=self._contextual_feature_to_min_uih_length,
+                contextual_feature_to_max_length=self._contextual_feature_to_max_length,    #{ "user_id": 1, "sex": 1, "age_group": 1, "occupation": 1, "zip_code": 1, }
+                contextual_feature_to_min_uih_length=self._contextual_feature_to_min_uih_length,  # { "user_id": 20, "sex": 20, "age_group": 20, "occupation": 20, "zip_code": 20, }
                 dtype=seq_embeddings.dtype,
             )
             # 线性层

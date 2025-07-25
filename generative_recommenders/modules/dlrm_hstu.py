@@ -107,8 +107,10 @@ def _get_supervision_labels_and_weights(
     supervision_weights: Dict[str, torch.Tensor] = {}
     for task in task_configs:
         if task.task_type == MultitaskTaskType.REGRESSION:
+            # 回归任务：直接使用观看时长作为标签
             supervision_labels[task.task_name] = watchtime_sequence.to(torch.float32)
         elif task.task_type == MultitaskTaskType.BINARY_CLASSIFICATION:
+             # 二分类任务：通过位运算提取对应的行为标签。比如kuaiRand数据集，1表示点击，2表示点赞，4表示收藏，8表示转发，16表示评论，32表示分享，64表示关注，128表示分享。
             supervision_labels[task.task_name] = (
                 torch.bitwise_and(supervision_bitmasks, task.task_weight) > 0
             ).to(torch.float32)
@@ -147,21 +149,21 @@ class DlrmHSTU(HammerModule):
                 SwishLayerNorm(512),
                 torch.nn.Linear(in_features=512, out_features=num_tasks),
             ).apply(init_mlp_weights_optional_bias),
-            causal_multitask_weights=hstu_configs.causal_multitask_weights,
+            causal_multitask_weights=hstu_configs.causal_multitask_weights, # 0.2
             is_inference=self._is_inference,
         )
 
         # preprocessor setup
         # 处理上下文特征和动作特征
         preprocessor = ContextualPreprocessor(
-            input_embedding_dim=hstu_configs.hstu_embedding_table_dim,
-            hidden_dim=hstu_configs.hstu_preprocessor_hidden_dim,
-            output_embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
-            contextual_feature_to_max_length=hstu_configs.contextual_feature_to_max_length,
-            contextual_feature_to_min_uih_length=hstu_configs.contextual_feature_to_min_uih_length,
+            input_embedding_dim=hstu_configs.hstu_embedding_table_dim,  # 256
+            hidden_dim=hstu_configs.hstu_preprocessor_hidden_dim,   # 256
+            output_embedding_dim=hstu_configs.hstu_transducer_embedding_dim, # 512
+            contextual_feature_to_max_length=hstu_configs.contextual_feature_to_max_length, #{ "user_id": 1, "sex": 1, "age_group": 1, "occupation": 1, "zip_code": 1, }
+            contextual_feature_to_min_uih_length=hstu_configs.contextual_feature_to_min_uih_length, # { "user_id": 20, "sex": 20, "age_group": 20, "occupation": 20, "zip_code": 20, }
             action_embedding_dim=8,
-            action_feature_name=self._hstu_configs.uih_weight_feature_name,
-            action_weights=self._hstu_configs.action_weights,
+            action_feature_name=self._hstu_configs.uih_weight_feature_name, # None ml-1m
+            action_weights=self._hstu_configs.action_weights, # None ml-1m
             is_inference=is_inference,
         )
 
@@ -169,7 +171,7 @@ class DlrmHSTU(HammerModule):
         positional_encoder = HSTUPositionalEncoder(
             num_position_buckets=8192,
             num_time_buckets=2048,
-            embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
+            embedding_dim=hstu_configs.hstu_transducer_embedding_dim, # 512
             contextual_seq_len=sum(
                 dict(hstu_configs.contextual_feature_to_max_length).values()
             ),
@@ -494,6 +496,7 @@ class DlrmHSTU(HammerModule):
                 num_candidates=num_candidates,
             )
         with record_function("## multitask_module ##"):
+            # 监督标签和权重提取
             supervision_labels, supervision_weights = (
                 _get_supervision_labels_and_weights(
                     supervision_bitmasks=payload_features[
